@@ -1,9 +1,12 @@
 import bpy
+import bmesh
 import json 
+import time
 import os
+from struct import pack
 import getpass
 from dataclasses import dataclass
-
+from timeit import default_timer as timer
 bl_info = {
     "name": "GXPort",
     "description": "Exports Blender scene to G10 scene",
@@ -47,6 +50,8 @@ partswdrel    = None
 
 entitieswd    = None
 entitieswdrel = None
+
+glob_shader_path = "G10/shaders/G10 PBR.json"
 
 # Set up a couple of variables
 view_layer = None
@@ -93,8 +98,13 @@ def sceneAsJSON(scene):
     print("[G10] [Export] [Scene] Exporting scene " + str(bpy.context.scene.name))
 
     for o in scene.objects:
-        if o.select_get():    
-            if o.type == 'MESH':
+        if o.select_get(): 
+            if o.type == 'LIGHT':
+                ret["lights"].append(lightAsJSON(o))
+            elif o.type == 'CAMERA':
+                ret["cameras"].append(cameraAsJSON(o))
+                   
+            elif o.type == 'MESH':
                 # TODO: Update to write entity to file, write file path to entities array
 
                 entityPath = entitieswd + "/" + o.name + ".json"
@@ -108,10 +118,6 @@ def sceneAsJSON(scene):
                     except:
                         None
                 ret["entities"].append(str(entityPathRel))
-            elif o.type == 'LIGHT':
-                ret["lights"].append(lightAsJSON(o))
-            elif o.type == 'CAMERA':
-                ret["cameras"].append(cameraAsJSON(o))
     return ret
 '''
 {
@@ -161,8 +167,8 @@ def entityAsJSON(entity):
     # Create the entity json
     ret = {
         "name"      : entity.name,
-        "parts"     : [],
-        "materials" : []
+        "materials" : [],
+        "parts"     : []
     }
     
     print("[G10] [Export] [Entity] Exporting entity " + entity.name)
@@ -171,11 +177,12 @@ def entityAsJSON(entity):
     
     # export shader
     # TODO: Get the path from the exporter window
-    ret["shader"] = "G10/Shaders/G10 PBR.json"
+    ret["shader"] = glob_shader_path
 
     # export transform
     ret["transform"] = transformAsJSON(entity)
     
+    ret["parts"].append(partAsJSON(entity))
     
     bpy.context.view_layer.objects.active = entity
     view_layer = entity
@@ -183,11 +190,23 @@ def entityAsJSON(entity):
     
     # export materials
     if(len(entity.material_slots)):
-        mJSON = materialAsJSON(m.material)
+        material_path_rel = materialwdrel + "/" 
+        
+        mJSON = materialAsJSON(entity)
+        material_path_rel = material_path_rel + mJSON["name"] + ".json"
+        material_path = materialwd + "/" + mJSON["name"] + ".json"
+        
+        with open(material_path, "w") as f:
+            try:
+                f.write(json.dumps(mJSON, indent=4))
+            except:
+                None
+            
     
+        
         # TODO: Write material to material directory
         if mJSON is not None:
-            ret["materials"].append(mJSON)
+            ret["materials"].append(material_path_rel)
             
     # export rigidbody
     if entity.rigid_body is not None:
@@ -207,10 +226,15 @@ def entityAsJSON(entity):
 #
 def partAsJSON(o):
     
+    lpath = partswd + "/" + o.name + ".ply"
+    lpathrel = partswdrel + "/" + o.name + ".ply"
+
+    bpy.ops.export_mesh.ply(filepath=lpath,check_existing=False,use_ascii=False,use_selection=True,use_mesh_modifiers=False, use_colors=False)
+        
     ret = {
         "name"     : o.name,
-        "path"     : "",
-        "material" : "o.material."
+        "path"     : lpathrel,
+        "material" : o.name
     }
 
     return ret
@@ -227,10 +251,7 @@ def partAsJSON(o):
 #
 #
 #
-def materialAsJSON(material):
-    '''
-        This function iterates through each material slot 
-    '''
+def materialAsJSON(o):
     
     #
     #
@@ -238,135 +259,629 @@ def materialAsJSON(material):
     #
     #
     
+    lpath = texturewd + "\\" + o.name 
+    lpathrel = texturewdrel + "/" + o.name
+    print("\n\n\n\n\n" + lpath + "\n\n\n\n\n\n")
+    
+    os.mkdir(lpath)
     
     ret = {
-        "name" : material.name
+        "name"   : o.name,
+        "albedo" : lpathrel + "/albedo.png",
+        "rough"  : lpathrel + "/rough.png",
+        "metal"  : lpathrel + "/metal.png",
+        "ao"     : lpathrel + "/ao.png",
+        "normal" : lpathrel + "/normal.png"
     }
+        
+    bakeTextures(o, lpath, 1024, True, True, True, True, True, False)
     
     
-    materialName    = material.name
-    materialPath    = str(texturewd) + "\\" + str(materialName) + "\\" 
-    global texturewdrel
-    materialPathRel = texturewdrel + "/" + str(materialName) + "/"
-    albedoPath      = materialPathRel + "albedo.png"
-    normalPath      = materialPathRel + "normal.png"
-    roughPath       = materialPathRel + "rough.png"
-    metalPath       = materialPathRel + "metal.png"
-    aoPath          = materialPathRel + "ao.png"
-    heightPath      = materialPathRel + "height.png"
-    
-    # Process material
-    if material.node_tree.nodes['Principled BSDF'] is not None:
-        
-        # Is the material output linked to a principled shader?
-        if material.node_tree.nodes['Principled BSDF'].type == 'BSDF_PRINCIPLED':
-
-            # Bake out albedo, normal, rough, metal, ao, and height maps selectively
-
-
-            # Convenience variables
-            activeMat    = material
-            materialName = activeMat.name
-            shaderInputs = material.node_tree.nodes['Principled BSDF'].inputs
-            shaderNodes  = material.node_tree.nodes
-            
-            # Define the material and its working directory
-            materialPath = str(texturewd) + "/" + str(materialName) + "/" 
-            
-            # Define paths and objects
-            albedo       = material.node_tree.nodes.new('ShaderNodeTexImage')
-            normal       = material.node_tree.nodes.new('ShaderNodeTexImage')
-            rough        = material.node_tree.nodes.new('ShaderNodeTexImage')
-            metal        = material.node_tree.nodes.new('ShaderNodeTexImage')
-            ao           = material.node_tree.nodes.new('ShaderNodeTexImage')
-            height       = material.node_tree.nodes.new('ShaderNodeTexImage')
-
-            # Create a directory for the material textures
-            try:
-                os.mkdir(os.path.join(texturewd,materialPath))
-            except FileExistsError:
-                print("[G10] [Export] [Material] Material directory already exists")
-            
-            ###################
-            # Bake the albedo #
-            ###################
-            
-            # Deselect lighting passes. Albedo is only color data.
-            bpy.context.scene.render.bake.use_pass_indirect = False
-            bpy.context.scene.render.bake.use_pass_direct   = False
-            bpy.context.scene.render.bake.use_pass_color    = True
-        
-            # Log the material name
-            print("[G10] [Export] [Material] Exporting \"" + materialName + "\" albedo")        
-        
-            # Are there any links from the base color input to other nodes?
-            if len(shaderInputs['Base Color'].links) != 0:
-                
-                # Is the link real?
-                if shaderInputs['Base Color'].links[0] is not None:
-                    
-                    # Is the node linked to a texture image?
-                    if shaderInputs['Base Color'].links[0].from_node.type =='TEX_IMAGE':
-                        
-                        # Is there a texture on the node?
-                        if shaderInputs['Base Color'].links[0].from_node.image is not None:
-
-                            # If all these conditions are satisfied, we can copy the image to the albedo node
-                            albedo.image = shaderInputs['Base Color'].links[0].from_node.image.copy()
-                        
-                        # If there isn't one, throw an error
-                        else:
-                            print("[G10] [Export] [Material] No texture connnected to image texture node")   
-            
-                # 
-                else:
-                    albedo.image = bpy.data.images.new(materialName + ".albedo", 1024, 1024)
-                    # Process the albedo
-                    activeMat.node_tree.nodes.active = albedo
-                    albedo.select                    = True
-                    
-                    # Set the bake parameters and bake the albedo texture 
-                    bpy.context.scene.render.bake.use_pass_color = True
-                
-                    # Albedos are sRGBbbbb
-                    albedo.image.colorspace_settings.name = 'sRGB'
-                    albedo.image.file_format = 'PNG'
-                    albedo.image.filepath = str(os.path.join(texturewd,materialPath))+"/albedo.png"
-                    albedo.image.save()
-                
-                    try:
-                        bpy.ops.object.bake(type='DIFFUSE', width=1024, height=1024, target='IMAGE_TEXTURES')
-                    except:
-                        None            
-        
-                    print("[G10] [Export] [Material] Exporting albedo image to " + albedoPath)
-                        
-    else:
-        print("[G10] [Export] [Material] Material \"" + materialName + "\" has no usable BSDF shader")        
-     
-    if albedo.image is not None:
-        ret["albedo"] = albedoPath
-    if normal.image is not None:
-        ret["albedo"] = albedoPath
-    if rough.image is not None:
-        ret["rough"] = roughPath
-    if metal.image is not None:
-        ret["metal"] = metalPath
-    if ao.image is not None:
-        ret["ao"] = aoPath
-
-    material.node_tree.nodes.remove(albedo)
-    material.node_tree.nodes.remove(normal)
-    material.node_tree.nodes.remove(rough)
-    material.node_tree.nodes.remove(metal)
-    material.node_tree.nodes.remove(ao)
-    material.node_tree.nodes.remove(height)
     
     return ret
 
-def bakeMaterialTextures(material):
+
+
+def bakeTextures(o, path, resolution, bake_albedo, bake_normal, bake_rough, bake_metal, bake_ao, bake_height):
+
+    image_nodes            = { }
+    metal_spec_input_nodes = { }
     
-    return 0
+    albedo_image = None
+    normal_image = None
+    rough_image  = None
+    metal_image  = None
+    ao_image     = None
+    height_image = None
+    
+    if bake_albedo:
+        albedo_image = bpy.data.images.new(o.name + ".albedo", resolution, resolution) if bake_albedo else None
+    else:
+        albedo_image = None
+    
+    
+    if bake_normal:
+        normal_image = bpy.data.images.new(o.name + ".normal", resolution, resolution) if bake_normal else None
+    else:
+        normal_image = None
+        
+        
+    if bake_rough:
+        rough_image  = bpy.data.images.new(o.name + ".rough" , resolution, resolution) if bake_rough  else None
+    else:
+        rough_image  = None
+    
+    
+    if bake_metal:
+        metal_image  = bpy.data.images.new(o.name + ".metal" , resolution, resolution) if bake_metal  else None
+    else:
+        metal_imge   = None
+        
+        
+    if bake_ao:
+        ao_image     = bpy.data.images.new(o.name + ".ao"    , resolution, resolution) if bake_ao     else None
+    else:
+        ao_image     = None
+        
+    if bake_height:    
+        height_image = bpy.data.images.new(o.name + ".height", resolution, resolution) if bake_height else None
+    else:
+        height_image = None
+    
+    for i, s in enumerate(o.material_slots):
+        bpy.context.object.active_material_index=i
+        material      = s.material
+        material_name = str(material.name)
+        
+        image_nodes[material_name] = [ ]
+        
+        albedo = None
+        normal = None
+        rough  = None
+        metal  = None
+        ao     = None
+        height = None
+        
+        if bake_albedo:
+            albedo       = s.material.node_tree.nodes.new('ShaderNodeTexImage')
+            albedo.image = albedo_image
+            
+        image_nodes[material_name].append(("albedo", albedo))
+        
+        
+        if bake_normal:
+            normal       = s.material.node_tree.nodes.new('ShaderNodeTexImage')
+            normal.image = normal_image
+ 
+        image_nodes[material_name].append(("normal", normal))
+
+        
+        if bake_rough:
+            rough        = s.material.node_tree.nodes.new('ShaderNodeTexImage')
+            rough.image  = rough_image
+
+        image_nodes[material_name].append(("rough", rough))
+        
+        if bake_metal:
+            metal        = s.material.node_tree.nodes.new('ShaderNodeTexImage')
+            metal.image  = metal_image
+
+        image_nodes[material_name].append(("metal", metal))
+        
+        
+        if bake_ao:            
+            ao           = s.material.node_tree.nodes.new('ShaderNodeTexImage')
+            ao.image     = ao_image
+            
+        image_nodes[material_name].append(("ao", ao))
+        
+        if bake_height:
+            height       = s.material.node_tree.nodes.new('ShaderNodeTexImage')
+            height.image = height_image
+            
+        image_nodes[material_name].append(("height", height))
+
+    for i, s in enumerate(o.material_slots):
+        bpy.context.object.active_material_index=i
+        material                 = s.material
+        material_name            = str(material.name)
+        
+        base_color_input         = None
+        metal_input              = None
+        specular_input           = None
+        
+        metal_link_to            = None
+        specular_link_to         = None
+        
+        principled               = None
+         
+        node_tree = material.node_tree
+
+        for n in node_tree.nodes:
+                n.select = False
+        
+        for n in node_tree.nodes:
+            if n.type == 'BSDF_PRINCIPLED':
+                principled       = n
+                base_color_input = n.inputs['Base Color']
+                albedo_to        = None
+                
+                metal_node       = n.inputs['Metallic']
+                specular_node    = n.inputs['Specular']
+                albedo_node      = n.inputs['Base Color']
+                
+                default_metal    = metal_node.default_value 
+                default_specular = specular_node.default_value
+                default_albedo   = albedo_node.default_value
+
+                if len(metal_node.links) >= 1:
+                    metal_link_to = metal_node.links[0].from_socket
+                    node_tree.links.remove(metal_node.links[0])
+                
+                        
+                if len(specular_node.links) >= 1:
+                    specular_link_to = specular_node.links[0].from_socket
+                    node_tree.links.remove(specular_node.links[0])
+                    
+                metal_node.default_value    = 0.0
+                specular_node.default_value = 0.0
+
+                material.node_tree.interface_update(bpy.context)
+                material.update_tag(refresh={'TIME'})
+
+                tp = (metal_link_to, specular_link_to, default_metal, default_specular)
+ 
+                metal_spec_input_nodes[material_name] = tp   
+    
+    for i in image_nodes:
+        for j in image_nodes[i]:
+            if j[0]=='albedo':
+                j[1].select=True
+
+    albedo_image.colorspace_settings.name = 'sRGB'        
+    albedo_image.file_format = 'PNG'
+    bpy.context.scene.cycles.bake_type = 'DIFFUSE'
+    bpy.context.scene.render.bake_margin = 32
+    bpy.ops.object.bake(type='DIFFUSE')
+    
+    albedo_image.save_render(str(path + "/albedo.png"))
+
+    for i, s in enumerate(o.material_slots):
+        bpy.context.object.active_material_index=i
+        material      = s.material
+        material_name = str(material.name)
+        node_tree     = material.node_tree
+        
+        for n in node_tree.nodes:
+            if n.type == 'BSDF_PRINCIPLED':
+                metal_in         = n.inputs['Metallic']
+                specular_in      = n.inputs['Specular']
+                
+                metal_out        = metal_spec_input_nodes[material_name][0]
+                specular_out     = metal_spec_input_nodes[material_name][1]
+                
+                default_metal    = metal_spec_input_nodes[material_name][2]
+                default_specular = metal_spec_input_nodes[material_name][3]
+                                
+                if metal_out is not None:
+                    node_tree.links.new(metal_in, metal_out)
+                    
+                if specular_out is not None:
+                    node_tree.links.new(specular_in, specular_out)
+                
+                metal_in.default_value    = default_metal
+                specular_in.default_value = default_specular
+
+                material.node_tree.interface_update(bpy.context)
+                material.update_tag(refresh={'TIME'})
+
+    for i in image_nodes:
+        for j in image_nodes[i]:
+            if j[0]=='rough':
+                print(j)
+                j[1].select=True
+
+    albedo_image.colorspace_settings.name = 'Linear'        
+    albedo_image.file_format = 'PNG'
+ 
+    bpy.ops.object.bake(type='GLOSSY', margin=32, use_clear=True)
+
+    albedo_image.save_render(str(path + "/metal.png"))
+
+    for i in image_nodes:
+        for j in image_nodes[i]:
+            if j[0]=='rough':
+                print(j)
+                j[1].select=True
+
+    albedo_image.colorspace_settings.name = 'Linear'        
+    albedo_image.file_format = 'PNG'
+
+    bpy.ops.object.bake(type='ROUGHNESS', margin=32, use_clear=True)
+
+    albedo_image.save_render(str(path + "/rough.png"))
+    
+    for i in image_nodes:
+        for j in image_nodes[i]:
+            if j[0]=='ao':
+                j[1].select=True
+
+    albedo_image.colorspace_settings.name = 'Linear'        
+    albedo_image.file_format = 'PNG'
+    
+    bpy.ops.object.bake(type='AO', margin=32, use_clear=True)
+        
+    albedo_image.save_render(str(path + "/ao.png"))
+
+    for i in image_nodes:
+        for j in image_nodes[i]:
+            if j[0]=='normal':
+                j[1].select=True
+
+    albedo_image.colorspace_settings.name = 'sRGB'        
+    albedo_image.file_format = 'PNG'
+    
+    multi = False
+
+    for modifier in o.modifiers:
+        if modifier.type == "MULTIRES":
+            multi = True
+            
+    if multi == True:
+        bpy.context.scene.render.use_bake_multires = True
+        bpy.context.scene.render.bake_margin = 32
+        
+
+        bpy.ops.object.bake_image()
+    else:
+        bpy.context.scene.render.use_bake_multires = False
+        bpy.context.scene.cycles.bake_type = 'NORMAL'
+        bpy.context.scene.render.bake_margin = 32
+        
+        bpy.ops.object.bake_image()
+        
+    
+    albedo_image.save_render(str(path + "/normal.png"))
+    
+    
+    
+    for i in image_nodes:
+        for j in image_nodes[i]:
+            if j[1] is not None:
+                if j[1].image is not None:
+                    bpy.data.images.remove(j[1].image)
+                o.material_slots[i].material.node_tree.nodes.remove(j[1])
+ 
+    
+    
+    return
+
+def exportPLY (filepath, mesh=bpy.context.selected_objects[0], comment=None, useGeometry=True, useUV=True):
+    
+    # Vertex groups 
+    
+    # Flags for vertex groups
+    useGeometry       = True
+    useUV             = False
+    useNormals        = True
+    useBitangents     = False
+    useColors         = False
+    useBoneGroups     = True
+    useBoneWeights    = True
+    
+    # Vertex arrays
+    geometry_array    = []
+    tuv_array         = []
+    uv_array          = []
+    normal_array      = []
+    bitangent_array   = []
+    color_array       = []
+    bone_group_array  = []
+    bone_weight_array = []
+    
+    # The UV 
+    active_uv         = mesh.data.uv_layers.active.data
+    
+    # Make a bmesh to access faces, edges, and verts
+    bm                = bmesh.new()
+
+    # Point the bmesh to the right mesh
+    bm.from_mesh(mesh.data)
+
+    # Buffer faces, edges, and vertices in the array
+    bm.faces.ensure_lookup_table()
+    bm.edges.ensure_lookup_table()
+    bm.verts.ensure_lookup_table()
+    
+    # Vertex data
+    vertices      = {}
+    vertices_count = len(mesh.data.vertices)
+    
+    if useGeometry == True:
+        vertices['xyz']  = []
+    
+    if useUV == True:
+        vertices['st'] = []
+    
+    if useNormals == True:
+        vertices['nxyz'] = []
+        
+    if useBitangents == True:
+        vertices['bxyz'] = []
+        
+    if useColors == True:
+        vertices['rgba'] = []
+        
+    if useBoneGroups == True:
+        vertices['bgroups'] = []
+        
+    if useBoneWeights == True:
+        vertices['bweights'] = []
+    
+    
+    # Face data
+    faces_count   = len(mesh.data.polygons)
+    faces         = []
+    
+    # Populate the vertices dictionary
+    for v in bm.verts:
+        
+        if useGeometry == True:
+            geometry_array.append(v.co)
+        
+       
+        if useNormals == True:
+            normal_array.append(v.normal)
+    
+    for f in mesh.data.polygons:
+         if useUV == True:    
+            tuv_array = [
+                active_uv[l].uv[:]
+                for l in range(f.loop_start, f.loop_start + f.loop_total)
+            ]
+            print(str(tuv_array))
+    
+    bone_weights_and_groups = get_bone_groups_and_weights(mesh)
+    
+    if bone_weights_and_groups is not None:
+        bone_group_array = bone_weights_and_groups[0]
+        bone_weight_array = bone_weights_and_groups[1]
+    else:
+        bone_group_array = None
+        bone_weight_array = None
+        
+    #for j, v in enumerate(f.vertices):
+    #    uv_array.append((tuv_array[j][0], tuv_array[j][1]))
+            
+    print(str(uv_array))
+    
+    if useGeometry == True:
+        vertices['xyz'] = geometry_array
+        
+    if useUV == True:
+        vertices['st'] = uv_array
+        
+    if useNormals == True:
+        vertices['nxyz'] = normal_array
+    #, uv_array, normal_array, bitangent_array, color_array, bone_group_array, bone_weight_array ) )
+    
+
+    vertices['bgroups']  = bone_group_array
+    vertices['bweights'] = bone_weight_array
+    
+    print(str(bone_group_array))
+    
+    # Populate the faces list
+    for f in mesh.data.polygons:
+        face = []
+        for i in f.vertices:
+            face.append(i)
+        faces.append(face)
+            
+
+    print(str(vertices))
+
+    # Write the PLY file
+    with open(filepath, "wb") as file:
+        
+        # Shorthand for file write
+        wr = file.write
+        
+        # Construct the header
+        
+        # Signature
+        wr(b"ply\n") 
+        
+        # Format
+        wr(b"format binary_little_endian 1.0\n")
+        
+        if comment is not None:
+            
+            # Split the comments on newlines
+            comments = comment.split('\n')
+            
+            # Iterate through the split comments, wrting one per line
+            for c in comments:
+                comment = str("comment " + str(c) + '\n')        
+                wr(comment.encode('utf-8'))
+        
+        
+        # Write vertex groups
+        wr(b"element vertex %d\n" % vertices_count)
+        
+        # Geometry
+        if useGeometry == True and vertices['xyz'] is not None:
+            wr(b"property float x\n")
+            wr(b"property float y\n")
+            wr(b"property float z\n")
+        
+        # UV
+        if useUV == True and vertices['st'] is not None:
+            wr(b"property float s\n")
+            wr(b"property float t\n")
+        
+        # Normals
+        if useNormals == True and vertices['nxyz'] is not None:
+            wr(b"property float nx\n")
+            wr(b"property float ny\n")
+            wr(b"property float nz\n")
+
+        # Bitangents
+        if useBitangents == True and vertices['bxyz'] is not None:
+            wr(b"property float bx\n")
+            wr(b"property float by\n")
+            wr(b"property float bz\n")
+
+        # Colors
+        if useColors == True  and vertices['rgba'] is not None:
+            wr(b"property uchar r\n")
+            wr(b"property uchar g\n")
+            wr(b"property uchar b\n")
+            wr(b"property uchar a\n")
+            
+        # Bone groups
+        if useBoneGroups == True and vertices['bgroups'] is not None:
+            wr(b"property uint b0\n")
+            wr(b"property uint b1\n")
+            wr(b"property uint b2\n")
+            wr(b"property uint b3\n")
+        
+        # Bone weights
+        if useBoneWeights == True and vertices['bweights'] is not None:
+            wr(b"property float w0\n")
+            wr(b"property float w1\n")
+            wr(b"property float w2\n")
+            wr(b"property float w3\n")
+        
+        # Face list
+        wr(b"element face %d\n" % len(mesh.data.polygons))
+        
+        # Face indices
+        wr(b"property list uchar int vertex_indices\n")
+        
+        # You can continue to add aditional elements here.
+        # Not sure what or why yet, but its a possibility
+        
+        # Done writing the header
+        wr(b"end_header\n")
+        
+        # Start writing vertices
+        for i in range(0,vertices_count):
+
+            # Write the geometry data for the vertex on the iterator
+            if useGeometry == True:
+                g = vertices['xyz'][i]
+                wr(pack("<3f", *g))
+            
+            # Write texture coordinates for the vertex on the iterator
+            if useUV == True:
+                uv = vertices['st'][i]
+                wr(pack("<2f", *uv))
+            
+            # Write normal vector for the vertex on the iterator
+            if useNormals == True:
+                n = vertices['nxyz'][i]
+                wr(pack("<3f", *n))
+            '''
+            # Write bitangent vector for the vertex on the iterator                
+            if bitangent is not None:
+                wr(pack("<3f", *bitangent))
+            
+            # Write color data  for the vertex on the iterator
+            if colors is not None:
+                wr(pack("<4B", *colors))
+            '''
+            # Write bone groups for the vertex on the iterator
+            if useBoneGroups == True:
+                bg = vertices['bgroups'][i]
+                wr(pack("<4i", *bg))
+            
+            # Write bone weights for the vertex on the iterator
+            if useBoneWeights == True:
+                bw = vertices['bweights'][i]
+                wr(pack("<4f", *bw))
+                None
+        
+        # 
+
+        # Start writing faces
+        for face in faces:
+            verts_in_face = len(face)
+            facew = "<" + str(verts_in_face) + "I"
+            wr(pack("<b", verts_in_face))
+            wr(pack(facew, *face))
+
+
+# This function gives me anxiety 
+def get_bone_groups_and_weights(o):
+    
+    bone_vertex_indices_and_weights = { }
+    bone_group_array  = []
+    bone_weight_array = []
+    
+    if len(o.vertex_groups) == 0:
+        return None
+    
+    # Find vertex indices and bone weights for each bone    
+    for g in o.vertex_groups:
+        
+        # Make a dictionary key for each bone
+        bone_vertex_indices_and_weights[g.name] = []
+        
+        # And a convenience variable
+        working_bone = bone_vertex_indices_and_weights[g.name]
+        
+        for v in o.data.vertices:
+            for vg in v.groups:
+                if vg.group == g.index:
+                    working_bone.append((v.index, vg.weight))
+    
+    '''
+        bone_vertex_indices_and_weights now looks like
+        {
+            "bone name" : [ (1, 0.6), (2, 0.4), (3, 0.2), ... ],
+            "spine"     : [ (9, 0.2), ... ],
+            ...
+            "head"      : [ ... , (3302, 0.23), (3303, 0.34), (3304, 0.6) ]
+        }
+    '''
+    # This exporter only writes the 4 most heavily weighted bones to each vertex
+    
+    # Iterate over every vert
+    for v in o.data.vertices:
+        
+        # Keep track of the 4 most heavy weights and their vertex groups
+        heaviest_groups  = [ -1, -1, -1, -1 ] 
+        heaviest_weights = [ 0, 0, 0, 0 ]
+        
+        # Iterate through bones
+        for c in bone_vertex_indices_and_weights.keys():
+            d = bone_vertex_indices_and_weights[c]
+            
+            for i in d:
+                if v.index == i[0]:
+                    if i[1] > heaviest_weights[0]:
+                        heaviest_groups[0]  = o.vertex_groups[c].index
+                        heaviest_weights[0] = i[1]
+                    elif i[1] > heaviest_weights[1]:
+                        heaviest_groups[1]  = o.vertex_groups[c].index
+                        heaviest_weights[1] = i[1]
+                    elif i[1] > heaviest_weights[2]:
+                        heaviest_groups[2]  = o.vertex_groups[c].index
+                        heaviest_weights[2] = i[1]
+                    elif i[1] > heaviest_weights[3]:
+                        heaviest_groups[3]  = o.vertex_groups[c].index
+                        heaviest_weights[3] = i[1]
+                    else:
+                        None
+        bone_group_array.append(heaviest_groups)
+        bone_weight_array.append(heaviest_weights)
+
+    
+    return (bone_group_array, bone_weight_array)
+
+exportPLY(filepath="C:/Users/j/Desktop/test.ply", comment="Written by Jake Smith\n12/8/2021")
+
 
 # Transform format: 
 # {
@@ -629,7 +1144,8 @@ class GXPort(Operator, ExportHelper):
 
     # Execute 
     def execute(self, context):
-
+        start = timer()
+        
         view_layer = bpy.context.view_layer
         obj_active = view_layer.objects.active
         selection  = bpy.context.selected_objects
@@ -711,7 +1227,7 @@ class GXPort(Operator, ExportHelper):
         sceneText = json.dumps(json.loads(json.dumps(sceneJSON), parse_float=lambda x: round(float(x), 3)), indent=4)
 
         # Create the path to the JSON file
-        scenePath = os.path.join(basedir, sceneName + ".json")
+        scenePath = os.path.join(basedir, sceneName + "/" + sceneName + ".json")
 
         # If we don't have garbage in the sceneText variable, we can probably write it 
         if sceneText is not None:
@@ -725,6 +1241,10 @@ class GXPort(Operator, ExportHelper):
                 outfile.write(sceneText)
             except FileExistsError:
                 print("[G10] [Export] Can not export " + sceneName + ".json")
+
+        end=timer()
+        
+        print( "EXPORT FINISHED: TOOK " + str(end-start) + " seconds")
 
         return {'FINISHED'}
     
@@ -797,12 +1317,15 @@ class GXPort(Operator, ExportHelper):
         if self.shader_option == 'Custom':
             box.prop(self,"shader_path")
         elif self.shader_option == 'PBR':
-            self.shader_path = "G10/G10 PBR.json"
+            self.shader_path = "G10/shaders/G10 PBR.json"
         elif self.shader_option == 'Diffuse':
-            self.shader_path = "G10/G10 Phong.json"
+            self.shader_path = "G10/shaders/G10 Phong.json"
         elif self.shader_option == 'Textured':
-            self.shader_path = "G10/G10 Textured.json"     
+            self.shader_path = "G10/shaders/G10 Textured.json"     
         box.label(text=str(self.shader_path))
+
+        global glob_shader_path
+        glob_shader_path = self.shader_path
         
         return
     
