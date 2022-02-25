@@ -1,6 +1,8 @@
 import bpy
 import bmesh
+import math
 import json 
+import sys
 import time
 import os
 from struct import pack
@@ -18,45 +20,55 @@ bl_info = {
     "category": "Import-Export",
 }
 
-@dataclass
-class GXPortContext:
-    albedo           : bool
-    normal           : bool
-    rough            : bool
-    metal            : bool
-    ao               : bool
-    height           : bool
-    relativePaths    : bool
-    textureResolution: int
-    
-
 # Export to blend file location
-basedir   = None
+basedir            = None
 
 # Working directoriy, asset directories
-sceneName     = None
+sceneName          = None
+glob_comment       = None
 
-wd            = None
-wdrel         = None
+wd                 = None
+wdrel              = None
 
-materialwd    = None
-materialwdrel = None
+materialwd         = None
+materialwdrel      = None
 
-texturewd     = None
-texturewdrel  = None
+texturewd          = None
+texturewdrel       = None
 
-partswd       = None
-partswdrel    = None
+partswd            = None
+partswdrel         = None
 
-entitieswd    = None
-entitieswdrel = None
+entitieswd         = None
+entitieswdrel      = None
 
-glob_shader_path = "G10/shaders/G10 PBR.json"
+glob_shader_path   = "G10/shaders/G10 PBR.json"
+
+# Material bake
+glob_use_albedo    = True
+glob_use_normal    = True
+glob_use_rough     = True
+glob_use_metal     = True
+glob_use_ao        = True
+glob_use_height    = True
+
+# Texture bake resolution
+glob_texture_dim   = 2048
+
+# Vertex groups
+glob_use_geometry  = True
+glob_use_uv        = True
+glob_use_normal    = True
+glob_use_bitangent = False
+glob_use_tangent   = False
+glob_use_color     = False
+glob_use_bgroups   = False
+glob_use_bweights  = False
 
 # Set up a couple of variables
-view_layer = None
-obj_active = None
-selection  = None
+view_layer         = None
+obj_active         = None
+selection          = None
 
 # TODO: This function will write the scene.json file
 def write_some_data(context, filepath, use_some_setting):
@@ -82,42 +94,51 @@ def sceneAsJSON(scene):
     
     # TODO: 
     ret = {
-        "name"     : sceneName,
-        "comment"  : "",
-        "entities" : [
-            
-        ],
-        "cameras"  : [
-        
-        ],
-        "lights"   : [
-        
-        ]
+        "name"     : bpy.context.scene.name
     }
     
     print("[G10] [Export] [Scene] Exporting scene " + str(bpy.context.scene.name))
+    
+    global glob_comment
+    
+    # Add comment
+    if glob_comment is not None:
+        ret["comment"] = glob_comment
 
+    ret["entities"] = []
+    ret["cameras"] = []
+    ret["lights"] = []
+    
+    l = []
     for o in scene.objects:
         if o.select_get(): 
-            if o.type == 'LIGHT':
-                ret["lights"].append(lightAsJSON(o))
-            elif o.type == 'CAMERA':
-                ret["cameras"].append(cameraAsJSON(o))
-                   
-            elif o.type == 'MESH':
-                # TODO: Update to write entity to file, write file path to entities array
-
-                entityPath = entitieswd + "/" + o.name + ".json"
-                entityPathRel = entitieswdrel + "/" + o.name + ".json"
-                entity = entityAsJSON(o)
-                entityText = json.dumps(json.loads(json.dumps(entity), parse_float=lambda x: round(float(x), 3)), indent=4)
+            l.append(o)  
+            o.select_set(False)
+    
+    for o in l:
+        if o.type == 'LIGHT':
+            ret["lights"].append(lightAsJSON(o))
+        elif o.type == 'CAMERA':
+            ret["cameras"].append(cameraAsJSON(o))
+               
+        elif o.type == 'MESH':
+            o.select_set(True)                    
+            # TODO: Update to write entity to file, write file path to entities array
+            entityPath = entitieswd + "/" + o.name + ".json"
+            entityPathRel = entitieswdrel + "/" + o.name + ".json"
+            entity = entityAsJSON(o)
+            entityText = json.dumps(json.loads(json.dumps(entity), parse_float=lambda x: round(float(x), 3)), indent=4)
                 
-                with open(entityPath, "w+") as f:
-                    try:
-                        f.write(entityText)
-                    except:
-                        None
-                ret["entities"].append(str(entityPathRel))
+            with open(entityPath, "w+") as f:
+                try:
+                    f.write(entityText)
+                except:
+                    None
+            ret["entities"].append(str(entityPathRel))
+            o.select_set(False)                    
+
+                
+                
     return ret
 '''
 {
@@ -158,11 +179,68 @@ def sceneAsJSON(scene):
 }
 '''
 
+def recenterMesh(o):
+    exit = False
+    iter = 128
+    
+    while exit == False and iter > 0:
+        # TODO: Replace with float min and float max constants
+        mx=-sys.float_info.max
+        my=-sys.float_info.max
+        mz=-sys.float_info.max
+
+        Mx=sys.float_info.max
+        My=sys.float_info.max
+        Mz=sys.float_info.max
+    
+        # Find minimum and maximum dimensions
+        for v in o.data.vertices:
+        
+            if v.co[0] > mx:
+                mx = v.co[0]
+            if v.co[1] > my:
+                my = v.co[1]
+            if v.co[2] > mz:
+                mz = v.co[2]
+        
+            if v.co[0] < Mx:
+                Mx = v.co[0]
+            if v.co[1] < My:
+                My = v.co[1]
+            if v.co[2] < Mz:
+                Mz = v.co[2]        
+    
+        # Calculate a new median point
+        medianx = (mx + Mx) / 2
+        mediany = (my + My) / 2
+        medianz = (mz + Mz) / 2
+
+        if medianx < 0.0001 and medianx > -0.0001 and mediany < 0.0001 and mediany > -0.0001 and medianz < 0.0001 and medianz > -0.0001:
+            exit = True 
+            
+
+        print(o.name)
+        if bpy.ops.object.mode_set.poll():
+            bpy.ops.object.mode_set(mode='EDIT')
+            
+        bpy.ops.transform.translate(value=(-(1/2)*medianx, -(1/2)*mediany, -(1/2)*medianz))
+    
+        if bpy.ops.object.mode_set.poll():
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+        bpy.ops.transform.translate(value=((1/2)*medianx, (1/2)*mediany, (1/2)*medianz))
+    
+        iter = iter - 1
+        
 
 def entityAsJSON(entity):
     
+    bpy.context.view_layer.objects.active = entity
+    view_layer = entity
+    selection  = entity
+    
     if entity.type != "MESH":
-        return {}
+        return None
     
     # Create the entity json
     ret = {
@@ -176,17 +254,20 @@ def entityAsJSON(entity):
     # export parts
     
     # export shader
-    # TODO: Get the path from the exporter window
     ret["shader"] = glob_shader_path
-
+    
     # export transform
     ret["transform"] = transformAsJSON(entity)
     
+        
     ret["parts"].append(partAsJSON(entity))
+        
+    # export rigidbody and collider
+    if entity.rigid_body is not None:
+        ret["rigid body"] = rigidbodyAsJSON(entity)
+        ret["collider"]   = colliderAsJSON(entity)
     
-    bpy.context.view_layer.objects.active = entity
-    view_layer = entity
-    selection  = entity
+
     
     # export materials
     if(len(entity.material_slots)):
@@ -200,18 +281,77 @@ def entityAsJSON(entity):
             try:
                 f.write(json.dumps(mJSON, indent=4))
             except:
-                None
-            
-    
+                None   
         
         # TODO: Write material to material directory
         if mJSON is not None:
             ret["materials"].append(material_path_rel)
             
-    # export rigidbody
-    if entity.rigid_body is not None:
-        ret["rigid body"] = rigidbodyAsJSON(entity)
     
+    return ret
+
+def entityDimensions(o):
+    
+    Mx=sys.float_info.max
+    My=sys.float_info.max
+    Mz=sys.float_info.max
+    
+    # Find minimum and maximum dimensions
+    for v in o.data.vertices:
+        
+        if v.co[0] < Mx:
+            Mx = v.co[0]
+        if v.co[1] < My:
+            My = v.co[1]
+        if v.co[2] < Mz:
+            Mz = v.co[2]       
+    
+    # Return dimensions
+    return [ abs(Mx), abs(My), abs(Mz) ]
+
+
+def colliderAsJSON(o):
+    
+    ret = {
+    
+    }
+    
+    if      o.rigid_body.collision_shape == 'BOX':
+        ret["type"] = "box"
+    elif o.rigid_body.collision_shape == 'SPHERE':
+        ret["type"] = "sphere"
+    elif o.rigid_body.collision_shape == 'CAPSULE':
+        ret["type"] = "capsule"
+    elif o.rigid_body.collision_shape == 'CYLINDER':
+        ret["type"] = "cylinder"
+    elif o.rigid_body.collision_shape == 'CONE':
+        ret["type"] = "cone"
+    elif o.rigid_body.collision_shape == 'CONVEX_HULL':
+        ret["type"] = "convex hull"
+
+    l = [ o.location[0],o.location[1],o.location[2] ]
+    r = [ o.rotation_euler[0],o.rotation_euler[1],o.rotation_euler[2] ]
+    s = [ o.scale[0], o.scale[1], o.scale[2] ]
+
+    o.location[0]=0
+    o.location[1]=0
+    o.location[2]=0
+    
+    o.rotation_euler[0]=0
+    o.rotation_euler[1]=0
+    o.rotation_euler[2]=0
+    
+    o.scale[0] = 1
+    o.scale[1] = 1
+    o.scale[2] = 1
+
+    dim = entityDimensions(o)
+
+    ret["dimensions"] = dim
+        
+    o.location = l
+    o.rotation_euler = r
+    o.scale    = s
     
     return ret
 
@@ -229,8 +369,30 @@ def partAsJSON(o):
     lpath = partswd + "/" + o.name + ".ply"
     lpathrel = partswdrel + "/" + o.name + ".ply"
 
-    bpy.ops.export_mesh.ply(filepath=lpath,check_existing=False,use_ascii=False,use_selection=True,use_mesh_modifiers=False, use_colors=False)
-        
+    l = [ o.location[0],o.location[1],o.location[2] ]
+    r = [ o.rotation_euler[0],o.rotation_euler[1],o.rotation_euler[2] ]
+    s = [ o.scale[0], o.scale[1], o.scale[2] ]
+
+    o.location[0]=0
+    o.location[1]=0
+    o.location[2]=0
+    
+    o.rotation_euler[0]=0
+    o.rotation_euler[1]=0
+    o.rotation_euler[2]=0
+    
+    o.scale[0] = 1
+    o.scale[1] = 1
+    o.scale[2] = 1
+
+    bpy.ops.export_mesh.ply(axis_forward='Y', axis_up='Z',filepath=lpath,check_existing=False,use_ascii=False,use_selection=True,use_mesh_modifiers=False, use_colors=False)
+    
+    o.location = l
+    o.rotation_euler = r
+    o.scale    = s
+    
+    # TODO: Replace with new exporter
+
     ret = {
         "name"     : o.name,
         "path"     : lpathrel,
@@ -238,6 +400,79 @@ def partAsJSON(o):
     }
 
     return ret
+
+
+# Transform format: 
+# {
+#     "location"   : [ 2, 0, 1.25 ],
+#     "quaternion" : [ 0.707, 0.707, 0, 0 ] - or - "rotation" : [ 90, 0 , 0 ]
+#     "scale"      : [ 1, 1, 1 ]
+# }
+
+def transformAsJSON(o):
+    
+    n = entityDimensions(o)
+    
+    
+    
+    ret = {
+        "location"  : [ o.location[0], o.location[1], o.location[2] ],
+        "quaternion": [ o.rotation_quaternion[0], o.rotation_quaternion[1], o.rotation_quaternion[2], o.rotation_quaternion[3] ],
+        "scale"     : [ o.scale[0], o.scale[1], o.scale[2] ]
+    }
+    return ret
+
+# Rigidbody format:
+# {
+#        "active"               : true,
+#        "mass"                 : 50.0,
+#        "friction"             : 0.1
+# }
+def rigidbodyAsJSON(object):
+    if object.rigid_body == None: 
+        return None    
+    
+    active = False if object.rigid_body.type == 'PASSIVE' else True
+    
+    ret = {
+        "active"   : active,
+        "mass"     : object.rigid_body.mass,
+        "friction" : object.rigid_body.friction
+    }
+    
+    return ret
+
+def cameraAsJSON(camera):
+    ret = {
+        "name"        : camera.name,
+        "fov"         : camera.data.angle * (180/math.pi),
+        "near"        : camera.data.clip_start,
+        "far"         : camera.data.clip_end
+    }
+    
+    from mathutils import Vector
+    targ = camera.matrix_world @ Vector((0,-1,0,1))
+    targ.normalize()
+    
+    ret["target"] = [ camera.location[0]+targ[0], camera.location[1]+targ[1], camera.location[2]+targ[2] ]
+    ret["up"]     = [ 0, 0, 1 ],
+    ret["where"]  = [ camera.location[0], camera.location[1], camera.location[2] ] 
+    return ret
+
+def lightAsJSON(light):
+    # Create the light json
+    
+    loc = light.location
+    rgb = light.data.color
+    w   = light.data.energy
+    ret = {
+        "name"     : light.name,
+        "location" : [ loc.x, loc.y, loc.z ],
+        "color"    : [ rgb[0] * w, rgb[1] * w, rgb[2] * w ] 
+    }
+    
+    return ret
+
 #
 # Material format
 # {
@@ -253,31 +488,52 @@ def partAsJSON(o):
 #
 def materialAsJSON(o):
     
-    #
-    #
-    #
-    #
-    #
-    
+    # Construct a path string
     lpath = texturewd + "\\" + o.name 
     lpathrel = texturewdrel + "/" + o.name
-    print("\n\n\n\n\n" + lpath + "\n\n\n\n\n\n")
-    
-    os.mkdir(lpath)
-    
+
+    # Make a directory from the path string for the material
+    try:
+        os.mkdir(lpath)
+    except FileExistsError:
+        pass
+    # Material JSON
     ret = {
-        "name"   : o.name,
-        "albedo" : lpathrel + "/albedo.png",
-        "rough"  : lpathrel + "/rough.png",
-        "metal"  : lpathrel + "/metal.png",
-        "ao"     : lpathrel + "/ao.png",
-        "normal" : lpathrel + "/normal.png"
+        "name"   : o.name
     }
+    
+    # Global state variables
+    global glob_use_albedo
+    global glob_use_normal
+    global glob_use_rough
+    global glob_use_metal
+    global glob_use_ao
+    global glob_use_height
+
+    global glob_texture_dim
+
+    # Add the correct tokens to the JSON object
+    if glob_use_albedo:
+        ret["albedo"] = lpathrel + "/albedo.png"
+    
+    if glob_use_normal:
+        ret["normal"] = lpathrel + "/normal.png"
+    
+    if glob_use_rough:
+        ret["rough"]  = lpathrel + "/rough.png"
         
-    bakeTextures(o, lpath, 1024, True, True, True, True, True, False)
+    if glob_use_metal:
+        ret["metal"]  = lpathrel + "/metal.png"
+        
+    if glob_use_ao:
+        ret["ao"]     = lpathrel + "/ao.png"
+        
+    #if glob_use_height:
+    #    ret["height"] = lpathrel + "/height.png"
     
-    
-    
+    # Bake the textures
+    bakeTextures(o, lpath, glob_texture_dim, glob_use_albedo, glob_use_normal, glob_use_rough, glob_use_metal, glob_use_ao, glob_use_height)
+
     return ret
 
 
@@ -380,171 +636,198 @@ def bakeTextures(o, path, resolution, bake_albedo, bake_normal, bake_rough, bake
             height.image = height_image
             
         image_nodes[material_name].append(("height", height))
-
-    for i, s in enumerate(o.material_slots):
-        bpy.context.object.active_material_index=i
-        material                 = s.material
-        material_name            = str(material.name)
+    
+    # Bake the albedo
+    if bake_albedo:
+        for i, s in enumerate(o.material_slots):
+            bpy.context.object.active_material_index = i
+            material                 = s.material
+            material_name            = str(material.name)
         
-        base_color_input         = None
-        metal_input              = None
-        specular_input           = None
+            base_color_input         = None
+            metal_input              = None
+            specular_input           = None
         
-        metal_link_to            = None
-        specular_link_to         = None
+            metal_link_to            = None
+            specular_link_to         = None
         
-        principled               = None
+            principled               = None
          
-        node_tree = material.node_tree
-
-        for n in node_tree.nodes:
+            node_tree = material.node_tree
+        
+            # Deselect all the nodes
+            for n in node_tree.nodes:
                 n.select = False
         
-        for n in node_tree.nodes:
-            if n.type == 'BSDF_PRINCIPLED':
-                principled       = n
-                base_color_input = n.inputs['Base Color']
-                albedo_to        = None
+            
+            # Save metal and specular from each node, and set metal and specular to zero
+            for n in node_tree.nodes:
                 
-                metal_node       = n.inputs['Metallic']
-                specular_node    = n.inputs['Specular']
-                albedo_node      = n.inputs['Base Color']
+                # Only for principled shader
+                if n.type == 'BSDF_PRINCIPLED':
+                    principled       = n
+                    base_color_input = n.inputs['Base Color']
+                    albedo_to        = None
                 
-                default_metal    = metal_node.default_value 
-                default_specular = specular_node.default_value
-                default_albedo   = albedo_node.default_value
+                    metal_node       = n.inputs['Metallic']
+                    specular_node    = n.inputs['Specular']
+                    albedo_node      = n.inputs['Base Color']
+                
+                    default_metal    = metal_node.default_value 
+                    default_specular = specular_node.default_value
+                    default_albedo   = albedo_node.default_value
 
-                if len(metal_node.links) >= 1:
-                    metal_link_to = metal_node.links[0].from_socket
-                    node_tree.links.remove(metal_node.links[0])
+                    if len(metal_node.links) >= 1:
+                        metal_link_to = metal_node.links[0].from_socket
+                        node_tree.links.remove(metal_node.links[0])
                 
                         
-                if len(specular_node.links) >= 1:
-                    specular_link_to = specular_node.links[0].from_socket
-                    node_tree.links.remove(specular_node.links[0])
+                    if len(specular_node.links) >= 1:
+                        specular_link_to = specular_node.links[0].from_socket
+                        node_tree.links.remove(specular_node.links[0])
                     
-                metal_node.default_value    = 0.0
-                specular_node.default_value = 0.0
+                    metal_node.default_value    = 0.0
+                    specular_node.default_value = 0.0
 
-                material.node_tree.interface_update(bpy.context)
-                material.update_tag(refresh={'TIME'})
+                    material.node_tree.interface_update(bpy.context)
+                    material.update_tag(refresh={'TIME'})
 
-                tp = (metal_link_to, specular_link_to, default_metal, default_specular)
- 
-                metal_spec_input_nodes[material_name] = tp   
-    
-    for i in image_nodes:
-        for j in image_nodes[i]:
-            if j[0]=='albedo':
-                j[1].select=True
+                    tp = (metal_link_to, specular_link_to, default_metal, default_specular)
 
-    albedo_image.colorspace_settings.name = 'sRGB'        
-    albedo_image.file_format = 'PNG'
-    bpy.context.scene.cycles.bake_type = 'DIFFUSE'
-    bpy.context.scene.render.bake_margin = 32
-    bpy.ops.object.bake(type='DIFFUSE')
-    
-    albedo_image.save_render(str(path + "/albedo.png"))
+                    metal_spec_input_nodes[material_name] = tp   
 
-    for i, s in enumerate(o.material_slots):
-        bpy.context.object.active_material_index=i
-        material      = s.material
-        material_name = str(material.name)
-        node_tree     = material.node_tree
+        # select all the albedo textures
+        for i in image_nodes:
+            for j in image_nodes[i]:
+                if j[0]=='albedo':
+                    j[1].select=True
+
+        # Set up the bake
+        albedo_image.colorspace_settings.name = 'sRGB'        
+        albedo_image.file_format = 'PNG'
+        bpy.context.scene.cycles.bake_type = 'DIFFUSE'
+        bpy.context.scene.render.bake_margin = 32
+        bpy.ops.object.bake(type='DIFFUSE')
         
-        for n in node_tree.nodes:
-            if n.type == 'BSDF_PRINCIPLED':
-                metal_in         = n.inputs['Metallic']
-                specular_in      = n.inputs['Specular']
-                
-                metal_out        = metal_spec_input_nodes[material_name][0]
-                specular_out     = metal_spec_input_nodes[material_name][1]
-                
-                default_metal    = metal_spec_input_nodes[material_name][2]
-                default_specular = metal_spec_input_nodes[material_name][3]
-                                
-                if metal_out is not None:
-                    node_tree.links.new(metal_in, metal_out)
-                    
-                if specular_out is not None:
-                    node_tree.links.new(specular_in, specular_out)
-                
-                metal_in.default_value    = default_metal
-                specular_in.default_value = default_specular
+        # Save the albedo
+        albedo_image.save_render(str(path + "/albedo.png"))
 
-                material.node_tree.interface_update(bpy.context)
-                material.update_tag(refresh={'TIME'})
 
-    for i in image_nodes:
-        for j in image_nodes[i]:
-            if j[0]=='rough':
-                print(j)
-                j[1].select=True
 
-    albedo_image.colorspace_settings.name = 'Linear'        
-    albedo_image.file_format = 'PNG'
- 
-    bpy.ops.object.bake(type='GLOSSY', margin=32, use_clear=True)
-
-    albedo_image.save_render(str(path + "/metal.png"))
-
-    for i in image_nodes:
-        for j in image_nodes[i]:
-            if j[0]=='rough':
-                print(j)
-                j[1].select=True
-
-    albedo_image.colorspace_settings.name = 'Linear'        
-    albedo_image.file_format = 'PNG'
-
-    bpy.ops.object.bake(type='ROUGHNESS', margin=32, use_clear=True)
-
-    albedo_image.save_render(str(path + "/rough.png"))
-    
-    for i in image_nodes:
-        for j in image_nodes[i]:
-            if j[0]=='ao':
-                j[1].select=True
-
-    albedo_image.colorspace_settings.name = 'Linear'        
-    albedo_image.file_format = 'PNG'
-    
-    bpy.ops.object.bake(type='AO', margin=32, use_clear=True)
-        
-    albedo_image.save_render(str(path + "/ao.png"))
-
-    for i in image_nodes:
-        for j in image_nodes[i]:
-            if j[0]=='normal':
-                j[1].select=True
-
-    albedo_image.colorspace_settings.name = 'sRGB'        
-    albedo_image.file_format = 'PNG'
-    
-    multi = False
-
-    for modifier in o.modifiers:
-        if modifier.type == "MULTIRES":
-            multi = True
+        # Restore specular and metal
+        for i, s in enumerate(o.material_slots):
+            bpy.context.object.active_material_index = i
+            material      = s.material
+            material_name = str(material.name)
+            node_tree     = material.node_tree
             
-    if multi == True:
-        bpy.context.scene.render.use_bake_multires = True
-        bpy.context.scene.render.bake_margin = 32
+            for n in node_tree.nodes:
+                if n.type == 'BSDF_PRINCIPLED':
+                    metal_in         = n.inputs['Metallic']
+                    specular_in      = n.inputs['Specular']
+                        
+                        
+                    metal_out        = metal_spec_input_nodes[material_name][0]
+                    specular_out     = metal_spec_input_nodes[material_name][1]
+                
+                    default_metal    = metal_spec_input_nodes[material_name][2]
+                    default_specular = metal_spec_input_nodes[material_name][3]
+                                
+                    if metal_out is not None:
+                        node_tree.links.new(metal_in, metal_out)
+                    
+                    if specular_out is not None:
+                        node_tree.links.new(specular_in, specular_out)
+                
+                    metal_in.default_value    = default_metal
+                    specular_in.default_value = default_specular
+
+                    material.node_tree.interface_update(bpy.context)
+                    material.update_tag(refresh={'TIME'})
+
+    if bake_metal:
+        for i in image_nodes:
+            for j in image_nodes[i]:
+                if j[0]=='metal':
+                    print(j)
+                    j[1].select=True
+        
+        albedo_image.colorspace_settings.name = 'Linear'        
+        albedo_image.file_format = 'PNG'
+ 
+        bpy.context.scene.render.bake.use_pass_indirect = False
+        bpy.context.scene.render.bake.use_pass_direct = False
+        bpy.context.scene.render.bake.use_pass_color = True
+
+        bpy.ops.object.bake(type='GLOSSY', margin=32, use_clear=True)
+
+        albedo_image.save_render(str(path + "/metal.png"))
+
+    if bake_rough:
+        for i in image_nodes:
+            for j in image_nodes[i]:
+                if j[0]=='rough':
+                    print(j)
+                    j[1].select=True
+
+        albedo_image.colorspace_settings.name = 'Linear'        
+        albedo_image.file_format = 'PNG'
+
+        bpy.ops.object.bake(type='ROUGHNESS', margin=32, use_clear=True)
+
+        albedo_image.save_render(str(path + "/rough.png"))
+    
+    
+    if bake_ao:
+        for i in image_nodes:
+            for j in image_nodes[i]:
+                if j[0]=='ao':
+                    j[1].select=True
+
+        albedo_image.colorspace_settings.name = 'Linear'        
+        albedo_image.file_format = 'PNG'
+    
+        bpy.ops.object.bake(type='AO', margin=32, use_clear=True)
+        
+        albedo_image.save_render(str(path + "/ao.png"))
+
+    if bake_normal:
+        for i in image_nodes:
+            for j in image_nodes[i]:
+                if j[0]=='normal':
+                    j[1].select=True
+
+        albedo_image.colorspace_settings.name = 'sRGB'        
+        albedo_image.file_format = 'PNG'
+        
+        multi = False
+
+        for modifier in o.modifiers:
+            if modifier.type == "MULTIRES":
+                multi = True
+            
+        if multi == True:
+            bpy.context.scene.render.use_bake_multires = True
+            bpy.context.scene.render.bake_margin = 32
         
 
-        bpy.ops.object.bake_image()
-    else:
-        bpy.context.scene.render.use_bake_multires = False
-        bpy.context.scene.cycles.bake_type = 'NORMAL'
-        bpy.context.scene.render.bake_margin = 32
+            bpy.ops.object.bake_image()
+        else:
+            bpy.context.scene.render.use_bake_multires = False
+            bpy.context.scene.cycles.bake_type = 'NORMAL'
+            bpy.context.scene.render.bake_margin = 32
+            
+            bpy.ops.object.bake_image()
+            
         
-        bpy.ops.object.bake_image()
-        
-    
-    albedo_image.save_render(str(path + "/normal.png"))
-    
-    
-    
+        albedo_image.save_render(str(path + "/normal.png"))
+
+        bpy.ops.image.external_edit(filepath=str(path + "/normal.png"))
+        bpy.ops.image.invert(invert_r=True)
+
+        albedo_image.save_render(str(path + "/normal.png"))
+
+    # Remove all the image nodes
     for i in image_nodes:
         for j in image_nodes[i]:
             if j[1] is not None:
@@ -880,78 +1163,19 @@ def get_bone_groups_and_weights(o):
     
     return (bone_group_array, bone_weight_array)
 
-exportPLY(filepath="C:/Users/j/Desktop/test.ply", comment="Written by Jake Smith\n12/8/2021")
+#exportPLY(filepath="C:/Users/j/Desktop/test.ply", comment="Written by Jake Smith\n12/8/2021")
 
 
-# Transform format: 
-# {
-#     "location"   : [ 2, 0, 1.25 ],
-#     "quaternion" : [ 0.707, 0.707, 0, 0 ] - or - "rotation" : [ 90, 0 , 0 ]
-#     "scale"      : [ 1, 1, 1 ]
-# }
-
-def transformAsJSON(object):
-    ret = {
-        "location"  : [ object.location[0], object.location[1], object.location[2] ],
-        "quaternion": [ object.rotation_quaternion[0], object.rotation_quaternion[1], object.rotation_quaternion[2], object.rotation_quaternion[3] ],
-        "scale"     : [ object.scale[0], object.scale[1], object.scale[2] ]
-    }
-    return ret
-
-# Rigidbody format:
-# {
-#        "active"               : true,
-#        "mass"                 : 50.0,
-#        "friction"             : 0.1
-# }
-def rigidbodyAsJSON(object):
-    if object.rigid_body == None: 
-        return None    
-    
-    active = False if object.rigid_body.type == 'PASSIVE' else True
-    
-    ret = {
-        "active"   : active,
-        "mass"     : object.rigid_body.mass,
-        "friction" : object.rigid_body.friction
-    }
-    
-    return ret
-
-def cameraAsJSON(camera):
-    ret = {
-        "name"        : camera.name,
-        "where"       : [ camera.location.x, camera.location.y, camera.location.z ],
-        "target"      : [ camera.matrix_world.to_4x4()[0][2], camera.matrix_world.to_4x4()[1][2],camera.matrix_world.to_4x4()[2][2] ],
-        "up"          : [ camera.matrix_world.to_4x4()[0][1], camera.matrix_world.to_4x4()[1][1],camera.matrix_world.to_4x4()[2][1] ],
-        "fov"         : camera.data.lens,
-        "near"        : camera.data.clip_start,
-        "far"         : camera.data.clip_end
-    }
-    
-    return ret
-
-def lightAsJSON(light):
-    # Create the light json
-    
-    loc = light.location
-    rgb = light.data.color
-    
-    ret = {
-        "name"     : light.name,
-        "location" : [ loc.x, loc.y, loc.z ],
-        "color"    : [ rgb[0], rgb[1], rgb[2] ] 
-    }
-    
-    return ret
     
 class GXPort(Operator, ExportHelper):
     """
-       GXPort will export lights, cameras, and meshes from a blend file to a G10 directory. Lights
-       and cameras will be exported as explicit text in scene.json, whereas meshes will be exported
-       into files referenced by path in scene.json. Entities will export PBR materials, rigid bodies, 
-       collision detection, skeletons, animation, etc. Props are static objects for which lighting
-       is precalculated. *As a rule of thumb, anything that won't move is probably a prop*.  
+       GXPort will export lights, cameras, and entities from a blend file to a G10 directory. Lights
+       and cameras will be exported as explicit text in scene.json, however meshes will be exported as entities
+       into files referenced by relative paths in scene.json. Base color, normal, rough, metal, AO, and height 
+       textures are baked and written to material directories. Rigid bodies, collision data, are also exported. 
+       TODO: skeletons, 
+       TODO: animation,
+       
     """
     # TODO: Rename before shipping 1.0
     bl_idname = "gxport.export"  # important since its how bpy.ops.import_test.some_data is constructed
@@ -993,13 +1217,19 @@ class GXPort(Operator, ExportHelper):
     filename_ext = ".json"
     
 
-    # Properties used in the exporter. ln. 442 - 582
+    # Properties used in the exporter.
 
     filter_glob: StringProperty(
         default="*.json",
         options={'HIDDEN'},
         maxlen=255,  # Max internal buffer length, longer would be clamped.
     )
+    
+    filepath = StringProperty(
+        name="File Path", 
+        description="file path", 
+        maxlen= 1024,
+        default= "")
 
     # List of operator properties, the attributes will be assigned
     # to the class instance from the operator settings before calling.
@@ -1135,7 +1365,7 @@ class GXPort(Operator, ExportHelper):
     # Texture export resolution property
     texture_resolution: IntProperty(
         name="",
-        default=1024,
+        default=2048,
         min=1,
         max=65535,
         step=1,
@@ -1150,13 +1380,40 @@ class GXPort(Operator, ExportHelper):
         obj_active = view_layer.objects.active
         selection  = bpy.context.selected_objects
 
+        bpy.context.scene.render.engine = "CYCLES"
+        bpy.context.view_layer.objects.active = None
+
         # Export to blend file location
-        basedir   = os.path.dirname(bpy.data.filepath)
+        basedir   = os.path.dirname(self.filepath)
 
         # Here, we define a working directory to start exporting things in
         sceneName  = bpy.context.scene.name
         wd         = os.path.join(basedir, sceneName)
         wdrel      = sceneName
+
+        global glob_comment        
+        
+        global glob_use_albedo
+        global glob_use_normal
+        global glob_use_rough
+        global glob_use_metal
+        global glob_use_ao
+        global glob_use_height
+
+        global glob_texture_dim
+
+        glob_comment    = self.comment
+                
+        glob_use_albedo = self.use_albedo
+        glob_use_normal = self.use_normal
+        glob_use_rough  = self.use_rough
+        glob_use_metal  = self.use_metal
+        glob_use_ao     = self.use_ao
+        glob_use_height = self.use_height
+
+        glob_texture_dim = self.texture_resolution      
+        
+        
         
         # With the working directory in hand, we can start creating directories for materials, textures, etc
         global materialwd
@@ -1219,15 +1476,15 @@ class GXPort(Operator, ExportHelper):
         print("[G10] [Export] Relative working  directory : \"" + partswdrel + "\"")
         print("[G10] [Export] Absolute entities directory : \"" + entitieswd + "\"")
         print("[G10] [Export] Relative working  directory : \"" + entitieswdrel + "\"")
-        
+                
         # Generate the JSON token
         sceneJSON = sceneAsJSON(bpy.context.scene)
         
-        # Dump the JSON, and load it back, and dump it again so we can truncate floats.
+        # Dump the JSON, and load it back, and dump it again to truncate floats.
         sceneText = json.dumps(json.loads(json.dumps(sceneJSON), parse_float=lambda x: round(float(x), 3)), indent=4)
 
         # Create the path to the JSON file
-        scenePath = os.path.join(basedir, sceneName + "/" + sceneName + ".json")
+        scenePath = os.path.join(basedir, sceneName)
 
         # If we don't have garbage in the sceneText variable, we can probably write it 
         if sceneText is not None:
@@ -1236,12 +1493,12 @@ class GXPort(Operator, ExportHelper):
             return {'CANCELLED'}
         
 
-        with open(scenePath, "w+") as outfile:
+        with open(self.filepath, "w+") as outfile:
             try:
                 outfile.write(sceneText)
             except FileExistsError:
-                print("[G10] [Export] Can not export " + sceneName + ".json")
-
+                pass
+                
         end=timer()
         
         print( "EXPORT FINISHED: TOOK " + str(end-start) + " seconds")
@@ -1318,10 +1575,33 @@ class GXPort(Operator, ExportHelper):
             box.prop(self,"shader_path")
         elif self.shader_option == 'PBR':
             self.shader_path = "G10/shaders/G10 PBR.json"
+            
+            self.use_albedo = True
+            self.use_normal = True
+            self.use_metal  = True
+            self.use_rough  = True
+            self.use_ao     = True
+            self.use_height = True
+            
         elif self.shader_option == 'Diffuse':
-            self.shader_path = "G10/shaders/G10 Phong.json"
+            self.shader_path = "G10/shaders/G10 Phong.json" 
+            
+            self.use_albedo = True
+            self.use_normal = True
+            self.use_metal  = True
+            self.use_rough  = False
+            self.use_ao     = False
+            self.use_height = False
+            
         elif self.shader_option == 'Textured':
             self.shader_path = "G10/shaders/G10 Textured.json"     
+
+            self.use_albedo = True
+            self.use_normal = False
+            self.use_metal  = False
+            self.use_rough  = False
+            self.use_ao     = False
+            self.use_height = False
         box.label(text=str(self.shader_path))
 
         global glob_shader_path
