@@ -366,6 +366,15 @@ def colliderAsJSON(o):
 #
 def partAsJSON(o):
     
+    global glob_use_geometry
+    global glob_use_uv
+    global glob_use_normal
+    global glob_use_bitangent
+    global glob_use_tangent
+    global glob_use_color
+    global glob_use_bgroups
+    global glob_use_bweights
+    
     lpath = partswd + "/" + o.name + ".ply"
     lpathrel = partswdrel + "/" + o.name + ".ply"
 
@@ -385,7 +394,7 @@ def partAsJSON(o):
     o.scale[1] = 1
     o.scale[2] = 1
 
-    bpy.ops.export_mesh.ply(axis_forward='Y', axis_up='Z',filepath=lpath,check_existing=False,use_ascii=False,use_selection=True,use_mesh_modifiers=False, use_colors=False)
+    export_ply_2(mesh=o,file_path=lpath, coment=glob_mesh_comment, use_geometry=glob_use_geometry, use_uv=glob_use_uv, use_normal=glob_use_normal, use_bitangent=glob_use_bitangent, use_tangent=glob_use_tangent, use_color=glob_use_color, use_bgroups=glob_use_bgroups, use_bweights=glob_use_bweights)
     
     o.location = l
     o.rotation_euler = r
@@ -838,262 +847,329 @@ def bakeTextures(o, path, resolution, bake_albedo, bake_normal, bake_rough, bake
     
     
     return
-
-def exportPLY (filepath, mesh=bpy.context.selected_objects[0], comment=None, useGeometry=True, useUV=True):
+# This function gives me anxiety 
+def get_bone_groups_and_weights(o):
     
-    # Vertex groups 
-    
-    # Flags for vertex groups
-    useGeometry       = True
-    useUV             = False
-    useNormals        = True
-    useBitangents     = False
-    useColors         = False
-    useBoneGroups     = True
-    useBoneWeights    = True
-    
-    # Vertex arrays
-    geometry_array    = []
-    tuv_array         = []
-    uv_array          = []
-    normal_array      = []
-    bitangent_array   = []
-    color_array       = []
+    bone_vertex_indices_and_weights = { }
     bone_group_array  = []
     bone_weight_array = []
     
-    # The UV 
-    active_uv         = mesh.data.uv_layers.active.data
+    if len(o.vertex_groups) == 0:
+        return None
     
-    # Make a bmesh to access faces, edges, and verts
-    bm                = bmesh.new()
+    # Find vertex indices and bone weights for each bone    
+    for g in o.vertex_groups:
+        
+        # Make a dictionary key for each bone
+        bone_vertex_indices_and_weights[g.name] = []
+        
+        # And a convenience variable
+        working_bone = bone_vertex_indices_and_weights[g.name]
+        
+        for v in o.data.vertices:
+            for vg in v.groups:
+                if vg.group == g.index:
+                    working_bone.append((v.index, vg.weight))
+    
+    '''
+        bone_vertex_indices_and_weights now looks like
+        {
+            "bone name" : [ (1, 0.6), (2, 0.4), (3, 0.2), ... ],
+            "spine"     : [ (9, 0.2), ... ],
+            ...
+            "head"      : [ ... , (3302, 0.23), (3303, 0.34), (3304, 0.6) ]
+        }
+    '''
+    # This exporter only writes the 4 most heavily weighted bones to each vertex
+    
+    # Iterate over every vert
+    for v in o.data.vertices:
+        
+        # Keep track of the 4 most heavy weights and their vertex groups
+        heaviest_groups  = [ -1, -1, -1, -1 ] 
+        heaviest_weights = [ 0, 0, 0, 0 ]
+        
+        # Iterate through bones
+        for c in bone_vertex_indices_and_weights.keys():
+            d = bone_vertex_indices_and_weights[c]
+            
+            for i in d:
+                if v.index == i[0]:
+                    if i[1] > heaviest_weights[0]:
+                        heaviest_groups[0]  = o.vertex_groups[c].index
+                        heaviest_weights[0] = i[1]
+                    elif i[1] > heaviest_weights[1]:
+                        heaviest_groups[1]  = o.vertex_groups[c].index
+                        heaviest_weights[1] = i[1]
+                    elif i[1] > heaviest_weights[2]:
+                        heaviest_groups[2]  = o.vertex_groups[c].index
+                        heaviest_weights[2] = i[1]
+                    elif i[1] > heaviest_weights[3]:
+                        heaviest_groups[3]  = o.vertex_groups[c].index
+                        heaviest_weights[3] = i[1]
+                    else:
+                        None
+        bone_group_array.append(heaviest_groups)
+        bone_weight_array.append(heaviest_weights)
 
-    # Point the bmesh to the right mesh
+    
+    return (bone_group_array, bone_weight_array)
+
+
+# PLY exporter v2
+def export_ply_2 ( mesh, file_path, comment=None, use_geometry=True, use_uv_coords=True, use_normals=False, use_tangents=False, use_bitangents=False, use_colors=False, use_bone_groups=False, use_bone_weights=False):
+    
+    # Convinience 
+    active_uv_layer         = mesh.data.uv_layers.active.data
+    active_col_layer        = None
+    bone_groups_and_weights = None
+    bone_groups             = None
+    bone_weights            = None
+    
+    if use_colors:
+        active_col_layer = mesh.vertex_colors.active.data
+        
+    # Make a new bmesh from the parameter
+    bm = bmesh.new()
     bm.from_mesh(mesh.data)
-
-    # Buffer faces, edges, and vertices in the array
+    
+    # Buffer lookup tables
     bm.faces.ensure_lookup_table()
     bm.edges.ensure_lookup_table()
     bm.verts.ensure_lookup_table()
     
-    # Vertex data
-    vertices      = {}
-    vertices_count = len(mesh.data.vertices)
+    # Dict for vertices and faces
+    vertices = { }
     
-    if useGeometry == True:
-        vertices['xyz']  = []
+    vertex_counter = 0
     
-    if useUV == True:
-        vertices['st'] = []
+    faces   = { }
     
-    if useNormals == True:
-        vertices['nxyz'] = []
+    if use_bone_groups or use_bone_weights:
+        bone_groups_and_weights = get_bone_groups_and_weights(mesh)
+        bone_groups  = bone_groups_and_weights[0]
+        bone_weights = bone_groups_and_weights[1]
         
-    if useBitangents == True:
-        vertices['bxyz'] = []
         
-    if useColors == True:
-        vertices['rgba'] = []
+    # Iterate over all faces (faces are triangulated)
+    for i, f in enumerate(bm.faces):
         
-    if useBoneGroups == True:
-        vertices['bgroups'] = []
+        # Face vertex attributes
+        t             = [ None, None, None ]
+        b             = [ None, None, None ]
         
-    if useBoneWeights == True:
-        vertices['bweights'] = []
-    
-    
-    # Face data
-    faces_count   = len(mesh.data.polygons)
-    faces         = []
-    
-    # Populate the vertices dictionary
-    for v in bm.verts:
+        # Face indicies
+        face_indicies = [ 0, 0, 0 ]
         
-        if useGeometry == True:
-            geometry_array.append(v.co)
+        # Compute the tangent and bitangent of the face        
+        if use_tangents or use_bitangents:
+            
+            # < x, y, z > coordinates for each vertex in the face
+            pos1                = (f.verts[0].co)
+            pos2                = (f.verts[1].co)
+            pos3                = (f.verts[2].co)    
         
-       
-        if useNormals == True:
-            normal_array.append(v.normal)
-    
-    for f in mesh.data.polygons:
-         if useUV == True:    
-            tuv_array = [
-                active_uv[l].uv[:]
-                for l in range(f.loop_start, f.loop_start + f.loop_total)
+            # < s, t > coordinates for each vertex
+            uv1                 = active_uv_layer[f.loops[0].index].uv
+            uv2                 = active_uv_layer[f.loops[1].index].uv
+            uv3                 = active_uv_layer[f.loops[2].index].uv
+        
+            # Compute the edges 
+            edge1               = pos2 - pos1
+            edge2               = pos3 - pos1
+        
+            # Compute the difference in UVs
+            delta1              = uv2 - uv1
+            delta2              = uv3 - uv1
+        
+            # Compute the inverse determinant
+            inverse_determinant = float(1) / float(delta1[0] * delta2[1] - delta2[0] * delta1[1])
+        
+            # Finally, construct the < tx, ty, tz > and < bx, by, bz > vectors
+            t = [
+                inverse_determinant * float( delta2[1] * edge1[0] - delta1[1] * edge2[0] ),
+                inverse_determinant * float( delta2[1] * edge1[1] - delta1[1] * edge2[1] ),
+                inverse_determinant * float( delta2[1] * edge1[2] - delta1[1] * edge2[2] )
             ]
-            print(str(tuv_array))
-    
-    bone_weights_and_groups = get_bone_groups_and_weights(mesh)
-    
-    if bone_weights_and_groups is not None:
-        bone_group_array = bone_weights_and_groups[0]
-        bone_weight_array = bone_weights_and_groups[1]
-    else:
-        bone_group_array = None
-        bone_weight_array = None
-        
-    #for j, v in enumerate(f.vertices):
-    #    uv_array.append((tuv_array[j][0], tuv_array[j][1]))
             
-    print(str(uv_array))
-    
-    if useGeometry == True:
-        vertices['xyz'] = geometry_array
+            b = [
+                inverse_determinant * float( -delta2[0] * edge1[0] + delta1[0] * edge2[0] ),
+                inverse_determinant * float( -delta2[0] * edge1[1] + delta1[0] * edge2[1] ),
+                inverse_determinant * float( -delta2[0] * edge1[2] + delta1[0] * edge2[2] )
+            ]
         
-    if useUV == True:
-        vertices['st'] = uv_array
-        
-    if useNormals == True:
-        vertices['nxyz'] = normal_array
-    #, uv_array, normal_array, bitangent_array, color_array, bone_group_array, bone_weight_array ) )
-    
-
-    vertices['bgroups']  = bone_group_array
-    vertices['bweights'] = bone_weight_array
-    
-    print(str(bone_group_array))
-    
-    # Populate the faces list
-    for f in mesh.data.polygons:
-        face = []
-        for i in f.vertices:
-            face.append(i)
-        faces.append(face)
+        # Iterate over each vertex in the face
+        for j, v in enumerate(f.verts):
             
+            # Vertex attributes
+            g  = [ None, None, None ]       # < x, y, z >
+            uv = [ None, None ]             # < s, t >
+            n  = [ None, None, None ]       # < nx, ny, nz >
+            c  = [ None, None, None, None ] # < r, g, b, a >
+            bg = [ None, None, None, None ] # < g0, g1, g2, g3 > 
+            bw = [ None, None, None, None ] # < w0, w1, w2, w3 >
+            
+            # < x, y, z > of current vert
+            if use_geometry:
+                g  = f.verts[j].co
+            
+            # < s, t > of current vert
+            if use_uv_coords:
+                uv = active_uv_layer[f.loops[j].index].uv
+            
+            # < nx, ny, nz > of current vert
+            if use_normals:
+                n  = f.verts[j].normal
+            
+            # < r, g, b, a >
+            if use_colors:
+                c  = active_col_layer[f.loops[j].index].color
 
-    print(str(vertices))
+            # TODO: Bone groups and weights
+            if use_bone_groups:
+                bg = bone_groups[f.verts[j].index]
+                   
+            if use_bone_weights:
+                bw = bone_weights[f.verts[j].index]              
+            
+            # Combine < x, y, z >
+            #         < s, t >
+            #         < nx, ny, nz >
+            #         < tx, ty, tz >
+            #         < bx, by, bz >
+            #         < r, g, b, a >
+            #         < g0, g1, g2, g3 >
+            #         < w0, w1, w2, w3 >
+            
+            combined_vertex = (
+                                g[0] , g[1] , g[2],         # 0  : < x, y, z >
+                                uv[0], uv[1],               # 3  : < s, t >
+                                n[0] , n[1] , n[2],         # 5  : < nx, ny, nz >
+                                t[0] , t[1] , t[2],         # 8  : < tx, ty, tz >
+                                b[0] , b[1] , b[2],         # 11 : < bx, by, bz >
+                                c[0] , c[1] , c[2] , c[3],  # 14 : < r, g, b, a >
+                                bg[0], bg[1], bg[2], bg[3], # 18 : < g0, g1, g2, g3 >
+                                bw[0], bw[1], bw[2], bw[3], # 22 : < w0, w1, w2, w3 >
+                              )
+            
+            index = vertices.get(combined_vertex)
+            
+            if index is not None:
+                face_indicies[j] = index
+            else:            
+                face_indicies[j] = vertex_counter
+                vertices[combined_vertex] = vertex_counter
+                
+                vertex_counter = vertex_counter + 1
 
-    # Write the PLY file
-    with open(filepath, "wb") as file:
-        
-        # Shorthand for file write
-        wr = file.write
-        
-        # Construct the header
-        
-        # Signature
-        wr(b"ply\n") 
-        
-        # Format
-        wr(b"format binary_little_endian 1.0\n")
-        
+        faces[i] = face_indicies
+
+    with open(file_path, "wb") as file:
+        fw = file.write
+
+        fw(b"ply\n")
+        fw(b"format binary_little_endian 1.0\n")
         if comment is not None:
-            
-            # Split the comments on newlines
-            comments = comment.split('\n')
-            
-            # Iterate through the split comments, wrting one per line
-            for c in comments:
-                comment = str("comment " + str(c) + '\n')        
-                wr(comment.encode('utf-8'))
-        
-        
-        # Write vertex groups
-        wr(b"element vertex %d\n" % vertices_count)
-        
-        # Geometry
-        if useGeometry == True and vertices['xyz'] is not None:
-            wr(b"property float x\n")
-            wr(b"property float y\n")
-            wr(b"property float z\n")
-        
-        # UV
-        if useUV == True and vertices['st'] is not None:
-            wr(b"property float s\n")
-            wr(b"property float t\n")
-        
-        # Normals
-        if useNormals == True and vertices['nxyz'] is not None:
-            wr(b"property float nx\n")
-            wr(b"property float ny\n")
-            wr(b"property float nz\n")
+            fw(b"comment " + str(comment))
 
-        # Bitangents
-        if useBitangents == True and vertices['bxyz'] is not None:
-            wr(b"property float bx\n")
-            wr(b"property float by\n")
-            wr(b"property float bz\n")
-
-        # Colors
-        if useColors == True  and vertices['rgba'] is not None:
-            wr(b"property uchar r\n")
-            wr(b"property uchar g\n")
-            wr(b"property uchar b\n")
-            wr(b"property uchar a\n")
+        fw(b"element vertex %d\n" % vertex_counter)
+        
+        if use_geometry:
+            fw(
+                b"property float x\n"
+                b"property float y\n"
+                b"property float z\n"
+            )
+        if use_uv_coords:
+            fw(
+                b"property float s\n"
+                b"property float t\n"
+            )
+        if use_normals:
+            fw(
+                b"property float nx\n"
+                b"property float ny\n"
+                b"property float nz\n"
+            )
+        if use_tangents:
+            fw(
+                b"property float tx\n"
+                b"property float ty\n"
+                b"property float tz\n"
+            )
+        if use_bitangents:
+            fw(
+                b"property float bx\n"
+                b"property float by\n"
+                b"property float bz\n"
+            )
+        if use_colors:
+            fw(
+                b"property uchar red\n"
+                b"property uchar green\n"
+                b"property uchar blue\n"
+                b"property uchar alpha\n"
+            )
+        if use_bone_groups:
+            fw(
+                b"property uchar b0\n"
+                b"property uchar b1\n"
+                b"property uchar b2\n"
+                b"property uchar b3\n"
+            )
+        if use_bone_weights:
+            fw(
+                b"property uchar w0\n"
+                b"property uchar w1\n"
+                b"property uchar w2\n"
+                b"property uchar w3\n"
+            )
             
-        # Bone groups
-        if useBoneGroups == True and vertices['bgroups'] is not None:
-            wr(b"property uint b0\n")
-            wr(b"property uint b1\n")
-            wr(b"property uint b2\n")
-            wr(b"property uint b3\n")
-        
-        # Bone weights
-        if useBoneWeights == True and vertices['bweights'] is not None:
-            wr(b"property float w0\n")
-            wr(b"property float w1\n")
-            wr(b"property float w2\n")
-            wr(b"property float w3\n")
-        
-        # Face list
-        wr(b"element face %d\n" % len(mesh.data.polygons))
-        
-        # Face indices
-        wr(b"property list uchar int vertex_indices\n")
-        
-        # You can continue to add aditional elements here.
-        # Not sure what or why yet, but its a possibility
-        
-        # Done writing the header
-        wr(b"end_header\n")
-        
-        # Start writing vertices
-        for i in range(0,vertices_count):
-
-            # Write the geometry data for the vertex on the iterator
-            if useGeometry == True:
-                g = vertices['xyz'][i]
-                wr(pack("<3f", *g))
+        fw(b"element face %d\n" % len(faces))
+        fw(b"property list uchar uint vertex_indices\n")
+        fw(b"end_header\n")
+    
+        # Iterate over vertices
+        for v in vertices:
             
-            # Write texture coordinates for the vertex on the iterator
-            if useUV == True:
-                uv = vertices['st'][i]
-                wr(pack("<2f", *uv))
+            # Write < x, y, z >
+            if use_geometry:
+                fw(pack("<3f", v[0] , v[1], v[2] ))
             
-            # Write normal vector for the vertex on the iterator
-            if useNormals == True:
-                n = vertices['nxyz'][i]
-                wr(pack("<3f", *n))
-            '''
-            # Write bitangent vector for the vertex on the iterator                
-            if bitangent is not None:
-                wr(pack("<3f", *bitangent))
-            
-            # Write color data  for the vertex on the iterator
-            if colors is not None:
-                wr(pack("<4B", *colors))
-            '''
-            # Write bone groups for the vertex on the iterator
-            if useBoneGroups == True:
-                bg = vertices['bgroups'][i]
-                wr(pack("<4i", *bg))
-            
-            # Write bone weights for the vertex on the iterator
-            if useBoneWeights == True:
-                bw = vertices['bweights'][i]
-                wr(pack("<4f", *bw))
-                None
+            # Write < s, t >
+            if use_uv_coords:
+                fw(pack("<2f", v[3] , v[4] ))
         
-        # 
-
-        # Start writing faces
-        for face in faces:
-            verts_in_face = len(face)
-            facew = "<" + str(verts_in_face) + "I"
-            wr(pack("<b", verts_in_face))
-            wr(pack(facew, *face))
-
+            # Write < nx, ny, nz >
+            if use_normals:
+                fw(pack("<3f", v[5] , v[6] , v[7] ))
+        
+            # Write < tx, ty, tz >
+            if use_tangents:
+                fw(pack("<3f", v[8] , v[9] , v[10]))
+            
+            # Write < bx, by, bz >
+            if use_bitangents:
+                fw(pack("<3f", v[11], v[12], v[13]))
+    
+            # Write < r, g, b, a >
+            if use_colors:
+                fw(pack("<4B", v[14], v[15], v[16], v[17]))
+    
+            if use_bone_groups:
+                fw(pack("<4i", v[18], v[19], v[20], v[21]))
+               
+            
+            if use_bone_weights:
+                fw(pack("<4f", v[22], v[23], v[24], v[25]))
+                    
+        for i, f in enumerate(faces):
+            w = "<3I"
+            fw(pack("<b", 3))
+            lf = faces[f] 
+            fw(pack(w, lf[0], lf[1], lf[2]))
+        
+    return     
 
 # This function gives me anxiety 
 def get_bone_groups_and_weights(o):
@@ -1337,7 +1413,11 @@ class GXPort(Operator, ExportHelper):
         description="Export vertex normals",
         default=True
     )
-
+    use_tangents: BoolProperty(
+        name="Tangents",
+        description="Export vertex Tangents",
+        default=False
+    )
     use_bitangents: BoolProperty(
         name="Bitangents",
         description="Export vertex bitangents",
@@ -1391,8 +1471,10 @@ class GXPort(Operator, ExportHelper):
         wd         = os.path.join(basedir, sceneName)
         wdrel      = sceneName
 
+        # Scene comment
         global glob_comment        
         
+        # Textures to bake
         global glob_use_albedo
         global glob_use_normal
         global glob_use_rough
@@ -1400,8 +1482,29 @@ class GXPort(Operator, ExportHelper):
         global glob_use_ao
         global glob_use_height
 
+        # Bake resolution
         global glob_texture_dim
 
+        # Vertex groups to export
+        global glob_use_geometry
+        global glob_use_uv
+        global glob_use_normal
+        global glob_use_bitangent
+        global glob_use_tangent
+        global glob_use_color
+        global glob_use_bgroups
+        global glob_use_bweights
+        
+        # Working directories
+        global materialwd
+        global materialwdrel
+        global texturewd
+        global texturewdrel
+        global partswd
+        global partswdrel
+        global entitieswd
+        global entitieswdrel
+        
         glob_comment    = self.comment
                 
         glob_use_albedo = self.use_albedo
@@ -1413,18 +1516,17 @@ class GXPort(Operator, ExportHelper):
 
         glob_texture_dim = self.texture_resolution      
         
+        glob_use_geometry  = self.use_geometric
+        glob_use_uv        = self.use_uv
+        glob_use_normal    = self.use_normals
+        glob_use_tangent   = self.use_tangents
+        glob_use_bitangent = self.use_bitangents
+        glob_use_color     = self.use_color
+        glob_use_bgroups   = self.use_bone_groups
+        glob_use_bweights  = self.use_bone_weights
+
         
-        
-        # With the working directory in hand, we can start creating directories for materials, textures, etc
-        global materialwd
-        global materialwdrel
-        global texturewd
-        global texturewdrel
-        global partswd
-        global partswdrel
-        global entitieswd
-        global entitieswdrel
-        
+        # With the working directory in hand, we can start creating directories for materials, textures, et
         materialwd    = os.path.join(wd, "materials")
         materialwdrel = wdrel + "/materials"
         texturewd     = os.path.join(wd, "textures")
@@ -1648,6 +1750,8 @@ class GXPort(Operator, ExportHelper):
         box.prop(self,"use_uv")
 
         box.prop(self,"use_normals")
+        
+        box.prop(self,"use_tangents")
     
         box.prop(self,"use_bitangents")
     
