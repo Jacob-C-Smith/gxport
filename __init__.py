@@ -22,7 +22,7 @@ from bpy.props import (
 from bpy.types import Operator
 
 bl_info = {
-    "name": "GXPort",
+    "name": "gxport",
     "description": "Exports Blender scene to G10 scene",
     "author" : "Jacob Smith",
     "version" : (0,1),
@@ -32,21 +32,28 @@ bl_info = {
     "category": "Import-Export",
 }
 
+materials: dict = {}
+
 class Light:
 
     '''
-        Light
+        gxport.Light
     '''
 
-    name      : str  = ""
-    location  : list = [ None, None, None ]
-    color     : list = [ None, None, None ]
-    light_type: str  = ""
+    # Uninitialized data
+    name      : str  = None
+    location  : list = None
+    color     : list = None
+    light_type: str  = None
 
-    json_data : dict = { }
+    json_data : dict = None
 
     # Constructor
     def __init__(self, object: bpy.types.Object):
+
+        '''
+            Constructs a gxport.Light from a bpy.types.Object 
+        '''
 
         # Type check
         if isinstance(object.data, bpy.types.Light) == False:
@@ -58,16 +65,19 @@ class Light:
         self.name                  = object.name
 
         # Location
+        self.location = [ None, None, None ]
         self.location[0]           = object.location[0]
         self.location[1]           = object.location[1]
         self.location[2]           = object.location[2]
         
         # Color
+        self.color    = [ None, None, None ]
         self.color[0]              = object.data.color[0] * object.data.energy
         self.color[1]              = object.data.color[1] * object.data.energy
         self.color[2]              = object.data.color[2] * object.data.energy
         
         # Set up the dictionary
+        self.json_data             = { }
         self.json_data["$schema"]  = "https://raw.githubusercontent.com/Jacob-C-Smith/G10-Schema/main/light-schema.json"
         self.json_data["name"]     = self.name
         self.json_data["location"] = self.location.copy()
@@ -78,19 +88,60 @@ class Light:
     # Returns file JSON
     def json(self):
 
+        '''           
+            Returns a G10 readable JSON object as a string
+        '''
+
+        # Dump the dictionary as a JSON object string
         return json.dumps(self.json_data, indent=4)
 
     # Writes JSON to a specified file
     def write_to_file(self, path: str):
         
+        ''' 
+            Write a G10 readable JSON object text to a file path
+        '''
+
         # Write the JSON data to the specified path
         with open(path, "w+") as f:
-            try:
-                f.write(self.json())
-            except FileExistsError:
-                pass
+            try: f.write(self.json())
+            except FileExistsError: pass
 
         return
+
+    @staticmethod
+    def import_from_file(path: str):
+        
+        # Uninitialized data
+        light_json    : dict = None
+
+        light_name    : str  = None
+        light_location: list = None
+        light_color   : list = None
+        light_comment : str  = None
+        
+        # Open the light file from the path
+        with open(path, "r") as f:
+
+            # Make a dictionary from the JSON
+            light_json = json.load(f)
+
+        # Copy out important properties
+        light_name     = light_json['name']
+        light_location = light_json['location']
+        light_color    = light_json['color']
+
+        # Create a new light
+        light_data = bpy.data.lights.new(name=light_name+" data", type='POINT')
+
+        # Create a new object
+        light_object = bpy.data.objects.new(name=light_name, object_data=light_data)
+        
+        # Add the new object to the current scene
+        bpy.context.collection.objects.link(light_object)
+
+        # Set the light properties
+        light_object.location = light_location
 
 class Camera:
 
@@ -98,15 +149,15 @@ class Camera:
         - Camera
     '''
 
-    name     : str   = ""
-    fov      : float = 0
-    near     : float = 0
-    far      : float = 0
-    target   : list  = [ None, None, None ]
-    up       : list  = [ None, None, None ]
-    where    : list  = [ None, None, None ]
+    name     : str   = None
+    fov      : float = None
+    near     : float = None
+    far      : float = None
+    target   : list  = None
+    up       : list  = None
+    where    : list  = None
 
-    json_data: dict  = { }
+    json_data: dict  = None
 
     def __init__(self, object: bpy.types.Camera):
 
@@ -135,21 +186,25 @@ class Camera:
         self.far                  = object.data.clip_end
 
         # Set the target
+        self.target               = [ None, None, None ]
         self.target[0]            = object.matrix_world[0][2] * -1
         self.target[1]            = object.matrix_world[1][2] * -1
         self.target[2]            = object.matrix_world[2][2] * -1
 
         # Set the up 
+        self.up                   = [ None, None, None ]
         self.up[0]                = object.matrix_world[0][1]
         self.up[1]                = object.matrix_world[1][1]
         self.up[2]                = object.matrix_world[2][1]
 
         # Set the location
+        self.where                = [ None, None, None ]
         self.where[0]             = object.matrix_world[0][3]
         self.where[1]             = object.matrix_world[1][3]
         self.where[2]             = object.matrix_world[2][3]
 
         # Set up the dictionary
+        self.json_data            = { }
         self.json_data["$schema"] = "https://raw.githubusercontent.com/Jacob-C-Smith/G10-Schema/main/camera-schema.json"
         self.json_data["name"]    = self.name
         self.json_data["fov"]     = self.fov
@@ -168,12 +223,13 @@ class Camera:
     # Writes JSON to a specified file
     def write_to_file(self, path: str):
         
-        # Write the JSON data to the specified path
+        ''' 
+            Write a G10 readable JSON object text to a file path
+        '''
+
         with open(path, "w+") as f:
-            try:
-                f.write(self.json())
-            except FileExistsError:
-                pass
+            try: f.write(self.json())
+            except FileExistsError: pass
 
         return
 
@@ -183,11 +239,13 @@ class Part:
         Part
     '''
 
-    name      : str  = ""
-
-    json_data : dict = { }
-    ply_path  : str  = ""
-    shader_name:str = "G10/shaders/G10 PBR.json"
+    name       : str            = None
+ 
+    json_data  : dict           = None
+    mesh       : bpy.types.Mesh = None
+    path       : str            = None
+    ply_path   : str            = None
+    shader_name: str            = "G10/shaders/G10 PBR.json"
 
     # Constructor
     def __init__(self, object: bpy.types.Object):
@@ -202,7 +260,11 @@ class Part:
         # Name
         self.name                  = object.name
 
+        # Blender mesh
+        self.mesh = object
+
         # Set up the dictionary
+        self.json_data             = { }
         self.json_data["$schema"]  = "https://raw.githubusercontent.com/Jacob-C-Smith/G10-Schema/main/part-schema.json"
         self.json_data["name"]     = self.name
         self.json_data["shader"]   = self.shader_name
@@ -220,17 +282,15 @@ class Part:
     # Writes JSON to a specified file
     def write_to_file(self, path: str):
 
-        self.export_ply()
+        self.json_data["path"] = self.ply_path
 
         # Write the JSON data to the specified path
         with open(path, "w+") as f:
-            try:
-                f.write(self.json())
-            except FileExistsError:
-                pass
+            try: f.write(self.json())
+            except FileExistsError: pass
 
     # PLY exporter 
-    def export_ply ( mesh, file_path:str, comment:str=None, use_geometry:bool=True, use_uv_coords:bool=True, use_normals:bool=False, use_tangents:bool=False, use_bitangents:bool=False, use_colors:bool=False, use_bone_groups:bool=False, use_bone_weights:bool=False):
+    def export_ply ( self, file_path, comment="Written from gxport" ):
 
         # Convinience 
         active_uv_layer         = self.mesh.data.uv_layers.active.data
@@ -239,7 +299,16 @@ class Part:
         bone_groups             = None
         bone_weights            = None
 
-        if use_colors:
+        use_geometry    : bool  = True
+        use_uv_coords   : bool  = True
+        use_normals     : bool  = True
+        use_tangents    : bool  = False 
+        use_bitangents  : bool  = False
+        use_colors      : bool  = False
+        use_bone_groups : bool  = False
+        use_bone_weights: bool  = False
+
+        if use_colors is True:
             active_col_layer = self.mesh.vertex_colors.active.data
 
         # Make a new bmesh from the parameter
@@ -259,8 +328,8 @@ class Part:
 
         faces   = { }
 
-        if use_bone_groups or use_bone_weights:
-            bone_groups_and_weights = get_bone_groups_and_weights(self.mesh)
+        if use_bone_groups is True or use_bone_weights is True:
+            bone_groups_and_weights = self.get_bone_groups_and_weights()
             bone_groups  = bone_groups_and_weights[0]
             bone_weights = bone_groups_and_weights[1]
 
@@ -276,7 +345,7 @@ class Part:
             face_indicies = [ 0, 0, 0 ]
 
             # Compute the tangent and bitangent of the face        
-            if use_tangents or use_bitangents:
+            if use_tangents is True or use_bitangents is True:
 
                 # < x, y, z > coordinates for each vertex in the face
                 pos1                = (f.verts[0].co)
@@ -324,26 +393,26 @@ class Part:
                 bw = [ None, None, None, None ] # < w0, w1, w2, w3 >
 
                 # < x, y, z > of current vert
-                if use_geometry:
+                if use_geometry is True:
                     g  = f.verts[j].co
 
                 # < s, t > of current vert
-                if use_uv_coords:
+                if use_uv_coords is True:
                     uv = active_uv_layer[f.loops[j].index].uv
 
                 # < nx, ny, nz > of current vert
-                if use_normals:
+                if use_normals is True:
                     n  = f.verts[j].normal
 
                 # < r, g, b, a >
-                if use_colors:
+                if use_colors is True:
                     c  = active_col_layer[f.loops[j].index].color
 
                 # TODO: Bone groups and weights
-                if use_bone_groups:
+                if use_bone_groups is True:
                     bg = bone_groups[f.verts[j].index]
 
-                if use_bone_weights:
+                if use_bone_weights is True:
                     bw = bone_weights[f.verts[j].index]              
 
                 # Combine < x, y, z >
@@ -389,50 +458,51 @@ class Part:
 
             fw(b"element vertex %d\n" % vertex_counter)
 
-            if use_geometry:
+            if use_geometry is True:
                 fw(
                     b"property float x\n"
                     b"property float y\n"
                     b"property float z\n"
                 )
-            if use_uv_coords:
+                
+            if use_uv_coords is True:
                 fw(
                     b"property float s\n"
                     b"property float t\n"
                 )
-            if use_normals:
+            if use_normals is True:
                 fw(
                     b"property float nx\n"
                     b"property float ny\n"
                     b"property float nz\n"
                 )
-            if use_tangents:
+            if use_tangents is True:
                 fw(
                     b"property float tx\n"
                     b"property float ty\n"
                     b"property float tz\n"
                 )
-            if use_bitangents:
+            if use_bitangents is True:
                 fw(
                     b"property float bx\n"
                     b"property float by\n"
                     b"property float bz\n"
                 )
-            if use_colors:
+            if use_colors is True:
                 fw(
                     b"property uchar red\n"
                     b"property uchar green\n"
                     b"property uchar blue\n"
                     b"property uchar alpha\n"
                 )
-            if use_bone_groups:
+            if use_bone_groups is True:
                 fw(
                     b"property uchar b0\n"
                     b"property uchar b1\n"
                     b"property uchar b2\n"
                     b"property uchar b3\n"
                 )
-            if use_bone_weights:
+            if use_bone_weights is True:
                 fw(
                     b"property uchar w0\n"
                     b"property uchar w1\n"
@@ -448,34 +518,34 @@ class Part:
             for v in vertices:
 
                 # Write < x, y, z >
-                if use_geometry:
+                if use_geometry is True:
                     fw(pack("<3f", v[0] , v[1], v[2] ))
 
                 # Write < s, t >
-                if use_uv_coords:
+                if use_uv_coords is True:
                     fw(pack("<2f", v[3] , v[4] ))
 
                 # Write < nx, ny, nz >
-                if use_normals:
+                if use_normals is True:
                     fw(pack("<3f", v[5] , v[6] , v[7] ))
 
                 # Write < tx, ty, tz >
-                if use_tangents:
+                if use_tangents is True:
                     fw(pack("<3f", v[8] , v[9] , v[10]))
 
                 # Write < bx, by, bz >
-                if use_bitangents:
+                if use_bitangents is True:
                     fw(pack("<3f", v[11], v[12], v[13]))
 
                 # Write < r, g, b, a >
-                if use_colors:
+                if use_colors is True:
                     fw(pack("<4B", v[14], v[15], v[16], v[17]))
 
-                if use_bone_groups:
+                if use_bone_groups is True:
                     fw(pack("<4i", v[18], v[19], v[20], v[21]))
 
 
-                if use_bone_weights:
+                if use_bone_weights is True:
                     fw(pack("<4f", v[22], v[23], v[24], v[25]))
 
             # Iterate over faces
@@ -488,7 +558,7 @@ class Part:
         return     
 
     # This function gives me anxiety 
-    def get_bone_groups_and_weights(o):
+    def get_bone_groups_and_weights(self, object):
 
         bone_vertex_indices_and_weights = { }
         bone_group_array  = []
@@ -552,10 +622,21 @@ class Part:
             bone_group_array.append(heaviest_groups)
             bone_weight_array.append(heaviest_weights)
 
-
         return (bone_group_array, bone_weight_array)
 
-    pass
+    # Writes JSON and ply to a directory 
+    def write_to_directory(self, directory: str):
+
+        parts_directory = directory + "/parts/"
+
+        self.ply_path   = (parts_directory + self.name + ".ply")
+        self.path       = (parts_directory + self.name + ".json")
+
+        self.export_ply(self.ply_path, "")
+
+        self.write_to_file(self.path)
+        
+        return
 
 class Texture:
     '''
@@ -569,17 +650,22 @@ class Texture:
     path       : str             = None
     addressing : str             = 'repeat'
     filter_mode: str             = 'linear'
+    generated  : bool            = None
 
     def __init__(self, *args):
 
         if len(args) > 1 or len(args) < 1:
             pass
         
-        self.json_data = {}
+        self.json_data = { }
 
         # Texture Image node
         if isinstance(args[0], bpy.types.ShaderNodeTexImage):
             
+            if args[0].image is None:
+                # TODO: Set missing texture
+                print("Missing Texture")
+                return
             image = args[0]
 
             # Set the image name
@@ -602,6 +688,8 @@ class Texture:
             elif image.extension == 'CLIP':
                 self.addressing = 'clamp border'
 
+            self.generated = False
+
         # Image
         elif isinstance(args[0], bpy.types.Image):
             
@@ -615,11 +703,14 @@ class Texture:
 
             # Default to repeat addressing with linear filtering
 
+            self.generated = True
+
         self.json_data['$schema']    = "https://raw.githubusercontent.com/Jacob-C-Smith/G10-Schema/main/texture-schema.json"
         self.json_data['name']       = self.name
         
         self.json_data['addressing'] = self.addressing
         self.json_data['filter']     = self.filter_mode
+        print("CONSTRUCTING " + self.name)
 
         return
 
@@ -629,6 +720,7 @@ class Texture:
         self.json_data['path'] = self.path
 
         if self.image is not None:
+            print("SAVING " + self.name)
             self.image.save_render(self.path)
 
         return
@@ -641,7 +733,9 @@ class Texture:
     # Destructor
     def __del__(self):
         if self.image is not None:
-            bpy.data.images.remove(self.image)
+            if self.generated is True:
+                print("DELETING " + self.name)
+                bpy.data.images.remove(self.image)
 
         return
 
@@ -674,12 +768,12 @@ class Material:
 
     def __init__(self, material: bpy.types.Material):
 
-        # Set the node tree
+         # Set the node tree
         self.node_tree = material.node_tree
 
         self.name      = material.name
 
-        self.json_data = {}
+        self.json_data = { }
 
         # Right now, only principled BSDF is supported
         if self.node_tree.nodes.find('Principled BSDF') != -1:    
@@ -693,12 +787,15 @@ class Material:
             print("ERROR ONLY SUPPORTS PRINCIPLED BSDF" + material.name)
             return
         
+        #################
+        # Export albedo #
+        #################
+
         # Set the albedo node
         self.albedo_node = self.principled_node.inputs["Base Color"]
 
         # Are there links on the node?
         if bool(self.albedo_node.links):
-            print("LINKED NODE")
 
             # This branch is for exporting images
             if isinstance(self.albedo_node.links[0].from_node, bpy.types.ShaderNodeTexImage):
@@ -710,14 +807,14 @@ class Material:
         
         # If there are no links, make a new 1x1 image with the color in "Base Color"
         else:
-            print("SOLID COLOR")
-
             c = self.albedo_node.default_value
-            bpy.ops.image.new(name=self.name+"TEMPORARY_ALBEDO", width=1, height=1, color=(c[0], c[1], c[2], 1.0), alpha=False, generated_type='BLANK', float=True)
-            self.albedo = Texture(bpy.data.images[self.name+"TEMPORARY_ALBEDO"])
+            bpy.ops.image.new(name=self.name + " albedo", width=1, height=1, color=(c[0], c[1], c[2], 1.0), alpha=False, generated_type='BLANK', float=True)
+            self.albedo = Texture(bpy.data.images[self.name + " albedo"])
         
-        print(self.albedo.json())
-
+        ################
+        # Export rough #
+        ################
+        
         # Set the rough node
         self.rough_node = self.principled_node.inputs["Roughness"]
 
@@ -735,13 +832,67 @@ class Material:
         # If there are no links, make a new 1x1 image with the color in "Roughness"
         else:
             c = self.rough_node.default_value
-            bpy.ops.image.new(name=self.name+"TEMPORARY_ROUGH", width=1, height=1, color=(c,c,c,1.0), alpha=False, generated_type='BLANK', float=True)
-            self.rough = Texture(bpy.data.images[self.name+'TEMPORARY_ROUGH'])
+            bpy.ops.image.new(name=self.name+" rough", width=1, height=1, color=(c,c,c,1.0), alpha=False, generated_type='BLANK', float=True)
+            self.rough = Texture(bpy.data.images[self.name+' rough'])
         
-        print(self.rough.json())
+        ################
+        # Export metal #
+        ################
 
-        self.json_data['$schema'] = "https://raw.githubusercontent.com/Jacob-C-Smith/G10-Schema/main/material-schema.json"
+        # Set the metal node
+        self.metal_node = self.principled_node.inputs["Metallic"]
+
+        # Are there any links on the metalness input?
+        if bool(self.metal_node.links):
+
+            # Export an image
+            if isinstance(self.metal_node.links[0].from_node, bpy.types.ShaderNodeTexImage):
+                self.metal = Texture(self.metal_node.links[0].from_node)
+
+            # Bake an image
+            else:
+                print("LINKED TO NODE SETUP")
+        
+        # If there are no links, make a new 1x1 image with the color in "Metalness"
+        else:
+            c = self.metal_node.default_value
+            print(self.name+" metal")
+            bpy.ops.image.new(name=self.name+" metal", width=1, height=1, color=(c,c,c,1.0), alpha=False, generated_type='BLANK', float=True)
+            self.metal = Texture(bpy.data.images[self.name+' metal'])
+        
+        #################
+        # Export normal #
+        #################
+
+        # Set the normal node
+        self.normal_node = self.principled_node.inputs["Normal"]
+
+        # Are there any links on the normal input?
+        if bool(self.normal_node.links):
+
+            # Export an image
+            if isinstance(self.normal_node.links[0].from_node, bpy.types.ShaderNodeTexImage):
+                self.normal = Texture(self.normal_node.links[0].from_node)
+
+            # Bake an image
+            else:
+                print("LINKED TO NODE SETUP")
+        
+        #############
+        # Export AO #
+        #############
+        
+        #################
+        # Export Height #
+        #################
+        
+
+
+        self.json_data['$schema']  = "https://raw.githubusercontent.com/Jacob-C-Smith/G10-Schema/main/material-schema.json"
+        self.json_data['name']     = material.name
         self.json_data['textures'] = []
+
+        materials[material.name] = self
 
         return
 
@@ -749,6 +900,7 @@ class Material:
     def bake(self, path: str):
 
         return
+
     def bake_albedo(self):
         pass
     def bake_rough(self):
@@ -800,7 +952,9 @@ class Material:
 
     # Save each material texture to a directory
     def save_material(self,  path: str):
-
+        
+        self.path              = path
+        self.json_data['path'] = self.path
         self.json_data['textures'] = []
 
         if self.albedo:
@@ -816,7 +970,7 @@ class Material:
         if self.height:
             self.json_data['textures'].append(json.loads(self.height.json()))
 
-        self.write_to_file(path)
+        self.write_to_file(self.path)
 
         return
 
@@ -841,19 +995,23 @@ class Material:
 
         # Delete all the textures
         if self.albedo is not None:
-            del self.albedo
-        if self.rough is not None:
-            del self.rough
-        if self.metal is not None:
-            del self.metal
-        if self.normal is not None:
-            del self.normal
-        if self.ao is not None:
-            del self.ao
-        if self.height is not None:
-            del self.height
-        
+            del(self.albedo)
 
+        if self.rough is not None:
+            del(self.rough)
+
+        if self.metal is not None:
+            del(self.metal)
+
+        if self.normal is not None:
+            del(self.normal)
+
+        if self.ao is not None:
+            del(self.ao)
+
+        if self.height is not None:
+            del(self.height)
+        
         return
 
 class LightProbe:
@@ -861,6 +1019,13 @@ class LightProbe:
     '''
         - Light Probes
     '''
+
+    json_data: dict = None
+
+    def __init__(self, object: bpy.types.Object):
+        self.json_data = { }
+
+        pass
 
     # Bake a scaled down sphere with an equirectangular UV? Maybe use a cubemap?
     pass
@@ -984,26 +1149,35 @@ class Collider:
     '''
 
     # Class data
-    dimensions : list = [ None, None, None ]
-    shape      : str  = ""
-    convex_hull: str  = ""
+    dimensions : list = None
+    shape      : str  = None
+    convex_hull: str  = None
 
-    json_data  : dict = {}
+    json_data  : dict = None
 
     # Class methods
 
     # Constructor
     def __init__ (self, object: bpy.types.Object):
         
+        # Check for a rigidbody
         if Rigidbody.has_rigidbody(object) == False:
             return
 
+        # Set the shape
         self.shape = object.rigid_body.collision_shape
 
+        # Set the dimensions
+        self.dimensions = [ None, None, None ]
+        # TODO
+
+        # Set the JSON
+        self.json_data               = { }
         self.json_data["$schema"]    = "https://raw.githubusercontent.com/Jacob-C-Smith/G10-Schema/main/collider-schema.json"
         self.json_data["type"]       = self.shape
         self.json_data["dimensions"] = self.dimensions
 
+        # Write the convex hull
         if self.convex_hull is not None:
             self.json_data["convex hull path"] = self.convex_hull
         
@@ -1046,7 +1220,7 @@ class Entity:
         
         self.name      = object.name
         self.part      = Part(object)
-        self.material  = Material(object.material_slots[0].material)
+        self.material  = materials.get(object.material_slots[0].material.name) if materials.get(object.material_slots[0].material.name) is not None else Material(object.material_slots[0].material)
         self.transform = Transform(object)
         self.rigidbody = Rigidbody(object)
         self.collider  = Collider(object)
@@ -1063,7 +1237,7 @@ class Entity:
 
         if bool(self.material.json_data):
             self.json_data['materials'] = []
-            self.json_data['materials'].append(json.loads(self.part.json()))
+            self.json_data['materials'].append(json.loads(self.material.json()))
 
         self.json_data['shader'] = 'G10/shaders/G10 PBR.json'
 
@@ -1094,19 +1268,30 @@ class Entity:
         return
 
     def write_to_directory(self, directory: str):
+
+        # Set the path to the entity json
         self.path = directory + "/entities/" + self.name + ".json"
 
-        # Save the part
-        #self.part.write_to_directory(directory)
+        # Directories for exports
+        material_dir = directory + "/materials/"
+        part_dir     = directory + "/part/"
+        collider_dir = directory + "/collider/"
 
         # Save the textures
         self.material.save_textures(directory)
         
-        # Write the material JSON
-        self.material.save_material(directory + "/materials/" + self.name + ".json")
-
+        # Write the material to a directory
+        self.material.save_material(material_dir + self.material.name + ".json")
+        self.json_data["materials"] = [ self.material.path ]
+        
+        # Save the part
+        self.part.write_to_directory(directory)
+        self.json_data["parts"]     = [ self.part.path ]
+        
+        # Write the entity to a directory
         self.write_to_file(self.path)
 
+        # Clean up
         del self.part
         del self.material
 
@@ -1118,7 +1303,7 @@ class Skybox:
         - Skybox
     '''
 
-    json_data: dict            = {}
+    json_data: dict            = None
     image:     bpy.types.Image = None
     name :     str             = None
 
@@ -1133,6 +1318,7 @@ class Skybox:
         self.name = world.name
 
         # Make a copy of the image
+        self.json_data                = {}
         self.json_data['$schema']     = 'https://raw.githubusercontent.com/Jacob-C-Smith/G10-Schema/main/skybox-schema.json'
         self.json_data['name']        = self.name
         self.json_data['environment'] = ""
@@ -1238,54 +1424,28 @@ class Scene:
 
             # Construct a light 
             if object.type == 'LIGHT':
-                light = (Light(object))
-                light_json = light.json_data.copy()
-                self.json_data["lights"].append(light_json)
-                self.lights.append(light)
+                self.lights.append(Light(object))
 
             # Construct a camera
             elif object.type == 'CAMERA':
-                camera = (Camera(object))
-                camera_json = camera.json_data.copy()
-                self.json_data["cameras"].append(camera_json)
-                self.cameras.append(camera)
+                self.cameras.append(Camera(object))
 
             # Construct an entity
             elif object.type == 'MESH':
-                entity      = (Entity(object))
-                entity_json = entity.json_data.copy()
-                self.json_data["entities"].append(entity_json)
-                self.entities.append(entity)
-                pass
+                self.entities.append(Entity(object))
+
+            # Construct a light probe 
             elif object.type == 'LIGHT_PROBE':
-                light_probe      = (LightProbe(object))
-                light_probe_json = light_probe.json_data.copy()
-                self.json_data["light probes"].append(light_probe_json)
-                self.light_probes.append(light_probe)            
+                self.light_probes.append(LightProbe(object))            
+
             # Default case
             else:
-                print("[G10] [Export] Unrecognized object")
+                print("[gxport] [Scene] Unrecognized object in scene \"" + scene.name + "\"")
 
         # Construct the skybox
         if isinstance(scene.world, bpy.types.World):
             self.skybox = Skybox(scene.world)
-            self.json_data["skybox"] = self.skybox.json_data.copy()
-
-        # Get rid of unneccisary keys
-        if bool(self.json_data["lights"]) == False:
-            self.json_data.pop("lights")
-
-        if bool(self.json_data["cameras"]) == False:
-            self.json_data.pop("cameras")
-
-        if bool(self.json_data["entities"]) == False:
-            self.json_data.pop("entities")
-
-        if bool(self.json_data["skybox"]) == False:
-            self.json_data.pop("skybox")
-
-        if bool(self.json_data["light probes"]) == False:
-            self.json_data.pop("light probes")
+            
 
         return
 
@@ -1296,60 +1456,125 @@ class Scene:
     def write_to_directory(self, directory: str):
         
         """
-            Writes a scene to a directory. 
+            Writes a scene to a directory, with entities, materials, parts, colliders, and skyboxes.
         """
 
         # Make scene directories
+
+        # This is where the scene is exported
         try   : os.mkdir(directory)
         except: pass
     
+        # This is where convex hulls are exported
         try   : os.mkdir(directory + "/colliders/")
         except: pass
         
+        # This is where entities are exported
         try   : os.mkdir(directory + "/entities/")
         except: pass
         
+        # This is where materials are exported
         try   : os.mkdir(directory + "/materials/")
         except: pass
         
+        # This is where 3D models are exported
         try   : os.mkdir(directory + "/parts/")
         except: pass
         
+        # This is where the skybox is exported
         try   : os.mkdir(directory + "/skybox/")
         except: pass
         
+        # This is where material textures are exported
+        # NOTE: Material textures are written to "textures/[material name]/". 
         try   : os.mkdir(directory + "/textures/")
         except: pass
         
-        self.json_data["entities"] = []
+        # Write entities
+        if bool(self.entities) == True:
 
-        # Save each entity
-        for entity in self.entities:
+            # Make an entity array in the json object
+            self.json_data["entities"] = []
 
-            # Write the entity and all its data
-            entity.write_to_directory(directory)
+            # Save each entity
+            for entity in self.entities:
 
-            # Add the entity path to the list
-            self.json_data["entities"].append(entity.path)
+                # Write the entity and all its data
+                entity.write_to_directory(directory)
 
-            del entity
+                # Write the entity path into the entities array
+                self.json_data["entities"].append(entity.path)
 
-        # Save the skybox image
-        self.skybox.save_image(directory + "/skybox/" + self.skybox.name + ".hdr")
-        self.skybox.write_to_file(directory + "/skybox/" + self.skybox.name + ".json")
+                # Destruct the entity
+                del entity
 
-        self.json_data["skybox"]       = directory + "/skybox/" + self.skybox.name + ".json"
+        # Write cameras
+        if bool(self.cameras) == True:
 
+            # Make a camera array in the json object
+            self.json_data["cameras"] = []
+
+            # Save each camera
+            for camera in self.cameras:
+
+                # Write the camera json object into the cameras array
+                self.json_data["cameras"].append(json.loads(camera.json()))
+
+                # Destruct the camera
+                del camera
+
+        # Write lights
+        if bool(self.lights) == True:
+
+            # Make a light array in the json object
+            self.json_data["lights"] = []
+
+            # Save each light
+            for light in self.lights:
+
+                # Write the light json object into the lights array
+                self.json_data["lights"].append(json.loads(light.json()))
+
+                # Destruct the light
+                del light
+
+
+        # Write light probes
+        if bool(self.light_probes) == False:
+
+            # Make a light probe array in the json object
+            self.json_data["light probes"] = []
+
+            # Save each light probe
+            for light_probe in self.light_probes:
+
+                #self.json_data["light probes"].append(light_probe.json())
+
+                #del light_probe
+                pass
+
+        # Write the skybox
+        if bool(self.skybox) == True:
+            
+            # Save the skybox image
+            self.skybox.save_image(directory + "/skybox/" + self.skybox.name + ".hdr")
+
+            # Save the skybox json
+            self.skybox.write_to_file(directory + "/skybox/" + self.skybox.name + ".json")
+
+            # Make a reference to the skybox json file in the json object
+            self.json_data["skybox"]       = directory + "/skybox/" + self.skybox.name + ".json"
+
+
+        # The path to the scene
         path = directory + "/" + self.name + ".json"
 
-        # Write the JSON data to the specified path
+        # Write the JSON data to the path
         with open(path, "w+") as f:
             try:
                 f.write(self.json())
             except FileExistsError:
                 pass
-
-
 
         return
 
@@ -1358,12 +1583,12 @@ class Bone:
         - Bone
     '''
 
-    name        : str  = ""
+    name        : str  = None
 
-    bone_matrix        = None
-    bone_head          = None
-    bone_tail          = None
-    json_data   : dict = { }
+    bone_matrix : list = None
+    bone_head   : list = None
+    bone_tail   : list = None
+    json_data   : dict = None
     
     # Constructor
     def __init__(self, bone: bpy.types.Bone):
@@ -1402,10 +1627,9 @@ class Pose:
         - Pose
     '''
 
-    name      : str  = ""
+    name      : str  = None
 
-    json_data : dict = { }
-
+    json_data : dict = None
     # Constructor
     def __init__(self, object: bpy.types.Object):
 
@@ -1439,7 +1663,7 @@ class Rig:
         - Rig
     '''
 
-    name       : str  = ""
+    name       : str  = None
 
     json_data  : dict = None
     bones             = None
@@ -1502,6 +1726,7 @@ class Rig:
         return
 
 class gxport(Operator, ExportHelper):
+
     """
        GXPort
        TODO: skeletons 
@@ -1539,11 +1764,13 @@ class gxport(Operator, ExportHelper):
     }
 
     DEFAULT_SHADERS = {
-        ("PBR"       , "Default PBR"     , "PBR"),
-        ("Diffuse"   , "Default Phong"   , "Diffuse"),
-        ("Textured"  , "Default Textured", "Textured"),
-        ("PBR Height", "PBR + Height"    , "PBR Height"),
-        ("Custom"    , "Custom"          , "Custom")
+        ("PBR"         , "Automatic PBR"   , "Auto PBR"),
+        ("Forward PBR" , "Forward PBR"     , "Forward PBR"),
+        ("Deferred PBR", "Deferred PBR"    , "Deferred PBR"),
+        ("Diffuse"     , "Default Phong"   , "Diffuse"),
+        ("Textured"    , "Default Textured", "Textured"),
+        ("PBR Height"  , "PBR + Height"    , "PBR Height"),
+        ("Custom"      , "Custom"          , "Custom")
     }
 
     IMAGE_FORMATS = {
@@ -1616,7 +1843,7 @@ class gxport(Operator, ExportHelper):
 
     # Properties for shaders
     shader_option: EnumProperty(
-        name        = "Shader",
+        name        = "",
         default     = "PBR",
         items       = DEFAULT_SHADERS,
         description = "The shader that will be used to draw entities"
@@ -1630,85 +1857,85 @@ class gxport(Operator, ExportHelper):
     # Properties for PBR material export
     use_albedo: BoolProperty(
         name        = "Albedo",
-        description = "albedo.",
+        description = "The albedo map is the base color input that defines the diffuse reflectivity of the surface.",
         default     = True
     )
     
     use_normal: BoolProperty(
         name        = "Normal",
-        description = "normal",
+        description = "The normal map give your object texture by changing the direction light is reflected off of surfaces.",
         default     = True
     )
     
     use_rough: BoolProperty(
         name        = "Rough",
-        description = "roughness",
+        description = "The rough map defines how light scatters across the surface.",
         default     = True
     )
     
     use_metal: BoolProperty(
         name        = "Metal",
-        description = "metal",
+        description = "The metal map defines where the surface is made of metal.",
         default     = True
     )
     
     use_ao: BoolProperty(
         name        = "Ambient Occlusion",
-        description = "AO",
+        description = "The ambient occlusion map creates softer & more realistic global shadows around the edges of objects.",
         default     = True
     )
     
     use_height: BoolProperty(
         name        = "Height",
-        description = "height",
+        description = "Height maps alter the geometry of an object.",
         default     = False
     )
     
     # Vertex group properties
     use_geometric: BoolProperty(
-        name        ="Geometric",
-        description ="Geometry",
+        name        ="< x, y, z >",
+        description ="Geometric coordinates.",
         default     =True
     )
 
     use_uv: BoolProperty(
-        name        = "UV",
-        description = "Texture coordinates",
+        name        = "< u, v >",
+        description = "Texture coordinates.",
         default     = True
     )
 
     use_normals: BoolProperty(
-        name        = "Normals",
+        name        = "< nx, ny, nz >",
         description = "Normals",
         default     = True
     )
 
     use_tangents: BoolProperty(
-        name        = "Tangents",
+        name        = "< tx, ty, tz >",
         description = "Tangents",
         default     = False
     )
 
     use_bitangents: BoolProperty(
-        name        = "Bitangents",
+        name        = "< bx, by, bz >",
         description = "Bitangents",
         default     = False
     )
 
     use_color: BoolProperty(
-        name        = "Color",
-        description = "vertex colors",
+        name        = "< r, g, b, a >",
+        description = "Color",
         default     = False
     )
 
     use_bone_groups: BoolProperty(
-        name        = "Bone groups",
+        name        = "< b0, b1, b2, b3 >",
         description = "Bone groups",
         default     = False
     )
 
     use_bone_weights: BoolProperty(
-        name        = "Bone weights",
+        name        = "< w0, w1, w2, w3 >",
         description = "Bone weights",
         default     = False
     )
@@ -1720,7 +1947,8 @@ class gxport(Operator, ExportHelper):
         min     = 1,
         max     = 65535,
         step    = 1,
-        subtype = 'PIXEL'
+        subtype = 'PIXEL',
+        description = "Texture resolution for baking"
     )
 
     image_format: EnumProperty(
@@ -1746,22 +1974,60 @@ class gxport(Operator, ExportHelper):
         # Time how long it takes to export the scene
         start = timer()
 
+        state: dict = { }
+
+        # General state
+        state['relative paths']         = self.relative_paths
+        state['comment']                = self.comment
+
+        # Global orientation
+        state['forward axis']           = self.forward_axis
+        state['up axis']                = self.up_axis
+
+        # Vertex groups
+        state['vertex groups']          = []
+        state['vertex groups'].append("xyz"  if self.use_geometric    else None)
+        state['vertex groups'].append("uv"   if self.use_uv           else None)
+        state['vertex groups'].append("nxyz" if self.use_normals      else None)
+        state['vertex groups'].append("txyz" if self.use_tangents     else None)
+        state['vertex groups'].append("bxyz" if self.use_bitangents   else None)
+        state['vertex groups'].append("rgba" if self.use_color        else None)
+        state['vertex groups'].append("bg"   if self.use_bone_groups  else None)
+        state['vertex groups'].append("bw"   if self.use_bone_weights else None)
+        
+        # Material settings
+        state['material textures']      = []
+        state['material textures'].append("albedo"  if self.use_albedo else None)
+        state['material textures'].append("normal"  if self.use_normal else None)
+        state['material textures'].append("rough"   if self.use_rough  else None)
+        state['material textures'].append("metal"   if self.use_metal  else None)
+        state['material textures'].append("ao"      if self.use_ao     else None)
+        state['material textures'].append("height"  if self.use_height else None)
+
+        # Shader settings
+        state['shader']                 = self.shader_path
+
+        # Bake settings
+        state['texture resolution']     = self.texture_resolution
+        state['image format']           = self.image_format
+        state['light probe resolution'] = self.light_probe_dim
+
         # Create a scene object
         scene = Scene(bpy.context.scene)
 
         # Write it to the directory
         scene.write_to_directory(self.filepath)
         
+        # Stop the timer
         end=timer()
         seconds = end-start
-        print( "[G10] [Export] Export Finished in " + str(int(seconds/3600)) + "h " + str(int(seconds%3600)) + "m " + str(int(seconds%60)) + "s ")
 
-
-        return {'CANCELLED'}
-
+        # Write the time
+        print( "[G10] [Export] Export Finished in " + str(int(seconds/3600)) + "h " + str(int(seconds/60)) + "m " + str(int(seconds%60)) + "s ")
 
         return {'FINISHED'}
-    
+        return {'CANCELLED'}
+
     # Draw general configuration tab
     
     # Draw export config box
@@ -2021,10 +2287,10 @@ def unregister():
     bpy.utils.unregister_class(gxport)
     bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
     
-# TODO: Remove before shipping version 1.0
 if __name__ == "__main__":
     register()
     
     # test call
+    # TODO: Remove before shipping version 1.0
     bpy.ops.gxport.export('INVOKE_DEFAULT')
     

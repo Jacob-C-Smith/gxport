@@ -1,0 +1,19 @@
+ - General - 
+    relative paths
+    - set class members to None
+    type everything
+    gimport?
+
+ - Part - 
+    write part paths
+
+ - Material - 
+    write material names
+    write correct material paths
+    cache materials to speed up writes
+
+ - Rigid body
+    Don't write mass if object is not active
+    Boolean for active, not string
+
+
