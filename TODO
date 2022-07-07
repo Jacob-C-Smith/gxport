@@ -5,15 +5,17 @@
     gimport?
 
  - Part - 
-    write part paths
+    DONE: write part paths
 
  - Material - 
-    write material names
+    DONE: write material names
     write correct material paths
-    cache materials to speed up writes
+    DONE: cache materials to speed up writes
 
  - Rigid body
-    Don't write mass if object is not active
+    written changes, but still need to test:
+    
+     Don't write mass if object is not active
     Boolean for active, not string
 
 

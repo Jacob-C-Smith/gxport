@@ -26,13 +26,16 @@ bl_info = {
     "description": "Exports Blender scene to G10 scene",
     "author" : "Jacob Smith",
     "version" : (0,1),
-    "blender": (3, 0, 0),
+    "blender": (3, 2, 0),
     "warning": "This software has not been rigorously tested and may not meet commercial software completeness standards",
     "doc_url": "https://github.com/Jacob-C-Smith/GXPort/",
     "category": "Import-Export",
 }
 
 materials: dict = {}
+entities:  dict = {}
+parts:     dict = {}
+
 
 class Light:
 
@@ -247,6 +250,8 @@ class Part:
     ply_path   : str            = None
     shader_name: str            = "G10/shaders/G10 PBR.json"
 
+    bone_data  : dict           = None 
+
     # Constructor
     def __init__(self, object: bpy.types.Object):
 
@@ -269,6 +274,9 @@ class Part:
         self.json_data["name"]     = self.name
         self.json_data["shader"]   = self.shader_name
         self.json_data["material"] = self.material_name
+
+        # Add the part to the cache
+        parts[self.name] = self
 
         return
 
@@ -329,7 +337,7 @@ class Part:
         faces   = { }
 
         if use_bone_groups is True or use_bone_weights is True:
-            bone_groups_and_weights = self.get_bone_groups_and_weights()
+            bone_groups_and_weights = self.get_bone_groups_and_weights(self.mesh)
             bone_groups  = bone_groups_and_weights[0]
             bone_weights = bone_groups_and_weights[1]
 
@@ -564,11 +572,11 @@ class Part:
         bone_group_array  = []
         bone_weight_array = []
 
-        if len(o.vertex_groups) == 0:
+        if len(object.vertex_groups) == 0:
             return None
 
         # Find vertex indices and bone weights for each bone    
-        for g in o.vertex_groups:
+        for g in object.vertex_groups:
 
             # Make a dictionary key for each bone
             bone_vertex_indices_and_weights[g.name] = []
@@ -576,10 +584,13 @@ class Part:
             # And a convenience variable
             working_bone = bone_vertex_indices_and_weights[g.name]
 
-            for v in o.data.vertices:
+            for v in object.data.vertices:
                 for vg in v.groups:
                     if vg.group == g.index:
                         working_bone.append((v.index, vg.weight))
+
+        for z in bone_vertex_indices_and_weights:
+            print(z)
 
         '''
             bone_vertex_indices_and_weights now looks like
@@ -593,7 +604,7 @@ class Part:
         # This exporter only writes the 4 most heavily weighted bones to each vertex
 
         # Iterate over every vert
-        for v in o.data.vertices:
+        for v in object.data.vertices:
 
             # Keep track of the 4 most heavy weights and their vertex groups
             heaviest_groups  = [ -1, -1, -1, -1 ] 
@@ -606,16 +617,16 @@ class Part:
                 for i in d:
                     if v.index == i[0]:
                         if i[1] > heaviest_weights[0]:
-                            heaviest_groups[0]  = o.vertex_groups[c].index
+                            heaviest_groups[0]  = object.vertex_groups[c].index
                             heaviest_weights[0] = i[1]
                         elif i[1] > heaviest_weights[1]:
-                            heaviest_groups[1]  = o.vertex_groups[c].index
+                            heaviest_groups[1]  = object.vertex_groups[c].index
                             heaviest_weights[1] = i[1]
                         elif i[1] > heaviest_weights[2]:
-                            heaviest_groups[2]  = o.vertex_groups[c].index
+                            heaviest_groups[2]  = object.vertex_groups[c].index
                             heaviest_weights[2] = i[1]
                         elif i[1] > heaviest_weights[3]:
-                            heaviest_groups[3]  = o.vertex_groups[c].index
+                            heaviest_groups[3]  = object.vertex_groups[c].index
                             heaviest_weights[3] = i[1]
                         else:
                             None
@@ -623,6 +634,18 @@ class Part:
             bone_weight_array.append(heaviest_weights)
 
         return (bone_group_array, bone_weight_array)
+
+    # Get bone names and vertex group indicies
+    def get_bone_names_and_indexes(self, object):
+
+        ret: dict = { }
+
+        for vg in object.vertex_groups:
+            ret[vg.name] = vg.index
+
+        print(str(ret))
+
+        return ret
 
     # Writes JSON and ply to a directory 
     def write_to_directory(self, directory: str):
@@ -1025,6 +1048,19 @@ class LightProbe:
     def __init__(self, object: bpy.types.Object):
         self.json_data = { }
 
+        # Spawn a very small sphere at the location of the light probe
+        bpy.ops.mesh.primitive_uv_sphere_add(segments=64, ring_count=32, radius=0.001, calc_uvs=True, enter_editmode=False, align='WORLD', location=(object.location[0], object.location[1], object.location[2]), rotation=(0, 0, 0), scale=(1, 1, 1))
+
+        # TODO: Add a principled BSDF, Base Color = #FFFFFF, Metal=0, Rough=0, 
+
+        # TODO: Investigate: Set smooth shading?
+
+        # Commentary: Maybe set roughness such that it will blur an amount proportional to the resolution
+
+        # TODO: Use equirectangular uv for bake
+
+        # TODO: Bake the GLOSSY with all influences into a generated 32 bit float image
+
         pass
 
     # Bake a scaled down sphere with an equirectangular UV? Maybe use a cubemap?
@@ -1122,14 +1158,15 @@ class Rigidbody:
 
         # Set up the dictionary
         self.json_data["$schema"] = "https://raw.githubusercontent.com/Jacob-C-Smith/G10-Schema/main/rigidbody-schema.json"
-        self.json_data["mass"]    = self.mass
         self.json_data["active"]  = self.active
 
         return 
 
     # Returns class as JSON text
     def json(self):
-        
+        if self.active:
+            self.json_data["mass"]    = self.mass
+
         return json.dumps(self.json_data, indent=4)
 
     def write_to_file(self, path: str):
@@ -1249,6 +1286,11 @@ class Entity:
 
         if bool(self.collider.json_data):
             self.json_data['collider'] = json.loads(self.collider.json())
+
+        # TODO: Rig
+        # Check parent objects for an armature type
+        # Construct a rig from the armature
+        # Add rig json
 
         return
     
@@ -1590,17 +1632,30 @@ class Bone:
     bone_tail   : list = None
     json_data   : dict = None
     
+    children    : list = None
+
     # Constructor
-    def __init__(self, bone: bpy.types.Bone):
+    def __init__(self, bone: bpy.types.Bone, bone_names_and_indexes):
         
         self.name        = bone.name
         self.bone_matrix = bone.matrix_local 
         self.bone_head   = [ bone.head_local[0], bone.head_local[1], bone.head_local[2] ]
         self.bone_tail   = [ bone.tail_local[0], bone.tail_local[1], bone.tail_local[2] ]
 
-        self.json_data['name'] = self.name
-        self.json_data['head'] = self.bone_head
-        self.json_data['tail'] = self.bone_tail
+        self.json_data = {}
+        self.json_data['name']  = self.name
+        self.json_data['head']  = self.bone_head
+        self.json_data['tail']  = self.bone_tail
+        self.json_data['index'] = bone_names_and_indexes[self.name]
+
+        print(self.name)
+
+        if bool(bone.children):
+            self.children = [  ]
+            self.json_data['children'] = [  ]
+            for b_i, b in enumerate(bone.children):
+                self.children.append(Bone(b, bone_names_and_indexes))
+                self.json_data['children'].append(json.loads(self.children[b_i].json()))
 
         return
 
@@ -1630,12 +1685,14 @@ class Pose:
     name      : str  = None
 
     json_data : dict = None
+    
     # Constructor
-    def __init__(self, object: bpy.types.Object):
+    def __init__(self, object: bpy.types.Pose):
 
         # Type check
-        if isinstance(object.data, bpy.types.Light) == False:
+        if isinstance(object.data, bpy.types.Pose) == False:
             return
+
 
 
         return
@@ -1663,11 +1720,12 @@ class Rig:
         - Rig
     '''
 
-    name       : str  = None
+    name       : str            = None
 
-    json_data  : dict = None
-    bones             = None
-    bones_json : dict = None
+    json_data  : dict           = None
+    root_bone  : bpy.types.Bone = None
+    bones_json : dict           = None
+    bone       : Bone           = None
 
     # Constructor
     def __init__(self, object: bpy.types.Object):
@@ -1679,39 +1737,34 @@ class Rig:
         # Construct a dictionary
         self.json_data = { }
 
+        self.name = object.name
+
         # Grab a random bone
         b = object.data.bones[0]
 
         # Find the root bone 
-        while b.parents != None:
-            b = b.parents[0]
+        while b.parent != None:
+            b = b.parent[0]
 
-        # Set 'bones' to the root bone
-        self.bones = b
+        # Make sure there is a valid part first
+        bone_names_and_indexes = parts[object.children[0].name].get_bone_names_and_indexes(object.children[0])
 
-        json_data['$schema'] = 'https://raw.githubusercontent.com/Jacob-C-Smith/G10-Schema/main/rig-schema.json'
+        self.bone = Bone(b, bone_names_and_indexes)
 
+        self.json_data = { }
+        self.json_data['$schema']    = 'https://raw.githubusercontent.com/Jacob-C-Smith/G10-Schema/main/rig-schema.json'
+        self.json_data['name']       = self.name
+        self.json_data['bones']      = json.loads(self.bone.json())
+        self.json_data['bone count'] = len(object.data.bones)
+        self.json_data['part name']  = object.children[0].name
+ 
         return
 
     # Returns file JSON
     def json(self):
+        
 
         return json.dumps(self.json_data, indent=4)
-
-    def recursive_bone_json(self, ret : dict):
-        
-        ret = [ ]
-        
-        b    = Bone(self.bones[0])
-        json = b.json()
-        
-        print(str(json))
-
-        for b_i in self.bones[0].childern:
-            pass
-
-
-        return ret
 
     # Writes JSON to a specified file
     def write_to_file(self, path: str):
@@ -1751,7 +1804,7 @@ class gxport(Operator, ExportHelper):
         ("General", "General", "General"),
         ("Scene"  , "Scene"  , "Scene"),
         ("Bake"   , "Bake"   , "Bake"),
-        ("Mesh"   , "Mesh"   , "Mesh"),
+        ("Shading", "Shading", "Shading"),
         ("Physics", "Physics", "Physics")
     }
     
@@ -1791,17 +1844,21 @@ class gxport(Operator, ExportHelper):
     )
     
     filepath = StringProperty(
-        name        = "File Path", 
+        name        = "File path", 
         description = "file path", 
         maxlen      =  1024,
         default     =  ""
     )
 
-    # List of operator properties, the attributes will be assigned
-    # to the class instance from the operator settings before calling.
     relative_paths: BoolProperty(
-        name        = "Relative Paths",
+        name        = "Relative paths",
         description = "Use relative file paths",
+        default     = True,
+    )
+
+    append_selected: BoolProperty(
+        name        = "Append selected",
+        description = "Append selected objects to scene directory and scene file",
         default     = True,
     )
     
@@ -1893,49 +1950,49 @@ class gxport(Operator, ExportHelper):
     
     # Vertex group properties
     use_geometric: BoolProperty(
-        name        ="< x, y, z >",
+        name        ="Geometry",
         description ="Geometric coordinates.",
         default     =True
     )
 
     use_uv: BoolProperty(
-        name        = "< u, v >",
+        name        = "Texture coordinates.",
         description = "Texture coordinates.",
         default     = True
     )
 
     use_normals: BoolProperty(
-        name        = "< nx, ny, nz >",
+        name        = "Normals",
         description = "Normals",
         default     = True
     )
 
     use_tangents: BoolProperty(
-        name        = "< tx, ty, tz >",
+        name        = "Tangents",
         description = "Tangents",
         default     = False
     )
 
     use_bitangents: BoolProperty(
-        name        = "< bx, by, bz >",
+        name        = "Bitangents",
         description = "Bitangents",
         default     = False
     )
 
     use_color: BoolProperty(
-        name        = "< r, g, b, a >",
+        name        = "Color",
         description = "Color",
         default     = False
     )
 
     use_bone_groups: BoolProperty(
-        name        = "< b0, b1, b2, b3 >",
+        name        = "Bone groups",
         description = "Bone groups",
         default     = False
     )
 
     use_bone_weights: BoolProperty(
-        name        = "< w0, w1, w2, w3 >",
+        name        = "Bone weights",
         description = "Bone weights",
         default     = False
     )
@@ -2012,14 +2069,22 @@ class gxport(Operator, ExportHelper):
         state['image format']           = self.image_format
         state['light probe resolution'] = self.light_probe_dim
 
-        # Create a scene object
-        scene = Scene(bpy.context.scene)
+        # What mode?
+        if self.append_selected is False:
+            
+            # Create a scene object
+            scene = Scene(bpy.context.scene)
+            
+            # Write it to the directory
+            scene.write_to_directory(self.filepath)
+            
+        else:
+            print("TODO:")
 
-        # Write it to the directory
-        scene.write_to_directory(self.filepath)
+        
         
         # Stop the timer
-        end=timer()
+        end = timer()
         seconds = end-start
 
         # Write the time
@@ -2040,8 +2105,8 @@ class gxport(Operator, ExportHelper):
         row = box.row()
         row.active = bpy.data.is_saved
         box.prop(self, "relative_paths")
-        #box.prop(self, "update_overwrite")
-        box.prop(self, "comment")
+        box.prop(self, "append_selected")
+        box.prop(self, "comment" )
         return
 
     # Draw global orientation config box
@@ -2092,7 +2157,7 @@ class gxport(Operator, ExportHelper):
                     row = box.row()
                     row.label(text=str(o.name),icon='OUTLINER_OB_LIGHTPROBE')
 
-    # Draw material and bake tab
+    # Draw material and shader tab
     
     # Draw shader options
     def draw_shader_settings(self, context):
@@ -2113,6 +2178,17 @@ class gxport(Operator, ExportHelper):
             self.use_rough  = True
             self.use_ao     = True
             self.use_height = False
+            
+
+            self.use_geometric    = True
+            self.use_uv           = True
+            self.use_normals      = True
+            self.use_tangents     = False
+            self.use_bitangents   = False
+            self.use_color        = False
+            self.use_bone_groups  = False
+            self.use_bone_weights = False
+
         elif self.shader_option == 'Diffuse':
             self.shader_path = "G10/shaders/G10 Phong.json" 
             
@@ -2180,7 +2256,7 @@ class gxport(Operator, ExportHelper):
         
         return
     
-    # Draw mesh tab
+    # Draw shader tab
     
     # Draw vertex group settings
     def draw_mesh_settings(self, context):
@@ -2262,20 +2338,19 @@ class gxport(Operator, ExportHelper):
             self.draw_export_config(context)        
             self.draw_global_orientation_config(context)
         if self.context_tab == 'Bake':
-            self.draw_shader_settings(context)
-            self.draw_material_settings(context)
             self.draw_texture_bake_settings(context)
             self.draw_light_probe_settings(context)
             self.draw_world_settings(context)
-        if self.context_tab == 'Mesh':
+        if self.context_tab == 'Shading':
+            self.draw_shader_settings(context)
+            self.draw_material_settings(context)
             self.draw_mesh_settings(context)
             self.draw_rig_settings(context)
         if self.context_tab == 'Physics':
             self.draw_collision_config(context)
-        
+
         return 
         
-# Only needed if you want to add into a dynamic menu
 def menu_func_export(self, context):
     self.layout.operator(gxport.bl_idname, text="Export G10 Scene (.json)")
 
