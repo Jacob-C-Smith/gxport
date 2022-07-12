@@ -643,8 +643,6 @@ class Part:
         for vg in object.vertex_groups:
             ret[vg.name] = vg.index
 
-        print(str(ret))
-
         return ret
 
     # Writes JSON and ply to a directory 
@@ -1638,9 +1636,9 @@ class Bone:
     def __init__(self, bone: bpy.types.Bone, bone_names_and_indexes):
         
         self.name        = bone.name
-        self.bone_matrix = bone.matrix_local 
-        self.bone_head   = [ bone.head_local[0], bone.head_local[1], bone.head_local[2] ]
-        self.bone_tail   = [ bone.tail_local[0], bone.tail_local[1], bone.tail_local[2] ]
+        self.bone_matrix = bone.matrix
+        self.bone_head   = [ bone.head[0], bone.head[1], bone.head[2] ]
+        self.bone_tail   = [ bone.tail[0], bone.tail[1], bone.tail[2] ]
 
         self.json_data = {}
         self.json_data['name']  = self.name
@@ -1648,7 +1646,6 @@ class Bone:
         self.json_data['tail']  = self.bone_tail
         self.json_data['index'] = bone_names_and_indexes[self.name]
 
-        print(self.name)
 
         if bool(bone.children):
             self.children = [  ]
@@ -1681,24 +1678,99 @@ class Pose:
     '''
         - Pose
     '''
-
-    name      : str  = None
-
-    json_data : dict = None
     
+    name          : str   = None
+
+    json_data     : dict  = None
+    delta         : float = None
+
     # Constructor
-    def __init__(self, object: bpy.types.Pose):
+    def __init__(self, object: bpy.types.NlaStrip):
 
-        # Type check
-        if isinstance(object.data, bpy.types.Pose) == False:
-            return
+        if isinstance(object, bpy.types.NlaStrip) == False:
+            return 
 
+        self.name  = object.name
+
+        # Keyframes must be converted into keytimes. Great application of dimensional analysis
+        # 
+        # second = frames / ( frames / second )
+        #        = frames * ( second / frames ) 
+        #        = second * ( frames / frames )
+
+        self.delta = object.frame_start / float(bpy.context.scene.render.fps)
 
 
         return
 
     # Returns file JSON
     def json(self):
+        self.json_data          = {}
+        self.json_data['name']  = self.name
+        self.json_data['delta'] = self.delta
+        
+        return json.dumps(self.json_data, indent=4)
+
+    # Writes JSON to a specified file
+    def write_to_file(self, path: str):
+        
+        # Write the JSON data to the specified path
+        with open(path, "w+") as f:
+            try:
+                f.write(self.json())
+            except FileExistsError:
+                pass
+
+        return
+
+
+class Action:
+
+    '''
+        - Action
+    '''
+
+    name          : str  = None
+
+    json_data     : dict = None
+    poses         : list = None
+    pose_sequence : list = None
+
+    @staticmethod
+    def strip_sort(e):
+        return e.frame_start
+
+
+    # Constructor
+    def __init__(self, object: bpy.types.NlaTrack):
+
+        if isinstance(object, bpy.types.NlaTrack) == False:
+            return 
+
+
+        self.name = object.name
+
+        self.poses = []
+        self.pose_sequence = []
+
+        for p_i in sorted(object.strips, key=self.strip_sort):
+            self.pose_sequence.append(Pose(p_i))
+        
+        self.json_data = {}
+        self.json_data['poses']         = []
+        self.json_data['pose sequence'] = []
+
+        return
+
+    # Returns file JSON
+    def json(self):
+
+        
+        self.json_data['name']          = self.name
+
+
+        for p_i in self.pose_sequence:
+            self.json_data['pose sequence'].append(json.loads(p_i.json()))
 
         return json.dumps(self.json_data, indent=4)
 
@@ -1726,6 +1798,7 @@ class Rig:
     root_bone  : bpy.types.Bone = None
     bones_json : dict           = None
     bone       : Bone           = None
+    actions    : list           = None
 
     # Constructor
     def __init__(self, object: bpy.types.Object):
@@ -1734,13 +1807,15 @@ class Rig:
         if isinstance(object.data, bpy.types.Armature) == False:
             return
 
+        context_action = object.animation_data.action
+
         # Construct a dictionary
         self.json_data = { }
 
         self.name = object.name
 
         # Grab a random bone
-        b = object.data.bones[0]
+        b = object.pose.bones[0]
 
         # Find the root bone 
         while b.parent != None:
@@ -1749,20 +1824,58 @@ class Rig:
         # Make sure there is a valid part first
         bone_names_and_indexes = parts[object.children[0].name].get_bone_names_and_indexes(object.children[0])
 
+        self.actions = []
+
+        for action in object.animation_data.nla_tracks:
+            self.actions.append(Action(action))
+
+        
+
+        for action in self.actions:
+            print("\n\n"+action.name)
+
+            
+
+            for pose in action.pose_sequence:
+
+                z = { }
+
+                object.animation_data.action = bpy.data.actions[object.animation_data.nla_tracks[action.name].strips[pose.name].action.name]
+
+                print(str( object.animation_data.nla_tracks[action.name].strips[pose.name].action.name))
+
+                bpy.context.scene.frame_set( int(pose.delta * bpy.context.scene.render.fps))
+                
+                
+                z['name'] = pose.name
+                z['bones'] = json.loads(Bone(object.pose.bones[0], bone_names_and_indexes).json())
+                action.json_data['poses'].append(json.loads(json.dumps(z)))
+
+                z = None
+
+
         self.bone = Bone(b, bone_names_and_indexes)
 
         self.json_data = { }
-        self.json_data['$schema']    = 'https://raw.githubusercontent.com/Jacob-C-Smith/G10-Schema/main/rig-schema.json'
-        self.json_data['name']       = self.name
-        self.json_data['bones']      = json.loads(self.bone.json())
-        self.json_data['bone count'] = len(object.data.bones)
-        self.json_data['part name']  = object.children[0].name
- 
+        self.json_data['$schema']          = 'https://raw.githubusercontent.com/Jacob-C-Smith/G10-Schema/main/rig-schema.json'
+        self.json_data['name']             = self.name
+        self.json_data['bone count']       = len(object.data.bones)
+        self.json_data['part name']        = object.children[0].name
+        self.json_data['actions']          = []
+
+        for a in self.actions:
+            self.json_data['actions'].append(json.loads(a.json()))
+
+        self.json_data['bones']            = json.loads(self.bone.json())
+
+
+
+        object.animation_data.action = context_action
+
         return
 
     # Returns file JSON
     def json(self):
-        
 
         return json.dumps(self.json_data, indent=4)
 
